@@ -56,6 +56,18 @@ DECL_BITFIELD(GBARegisterSOUNDBIAS, uint16_t);
 DECL_BITS(GBARegisterSOUNDBIAS, Bias, 0, 10);
 DECL_BITS(GBARegisterSOUNDBIAS, Resolution, 14, 2);
 
+struct GBAAudio;
+
+// Optional hook for tools that want the un-quantized audio signal (e.g. offline
+// renderers). sync is called with the current time before (and, for mixer
+// control registers, after) any change to audio state; fifoSample is called
+// whenever a FIFO latches a new sample, with the global cycle count at which it
+// latched.
+struct GBAAudioObserver {
+	void (*sync)(struct GBAAudioObserver*, struct GBAAudio*, int32_t timestamp);
+	void (*fifoSample)(struct GBAAudioObserver*, struct GBAAudio*, int fifoId, uint64_t when, int8_t sample);
+};
+
 struct GBAAudio {
 	struct GBA* p;
 
@@ -88,6 +100,8 @@ struct GBAAudio {
 	int masterVolume;
 
 	struct mTimingEvent sampleEvent;
+
+	struct GBAAudioObserver* observer;
 };
 
 struct GBAMP2kADSR {

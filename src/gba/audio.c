@@ -44,6 +44,13 @@ void GBAAudioInit(struct GBAAudio* audio, size_t samples) {
 	audio->forceDisableChB = false;
 	audio->masterVolume = GBA_AUDIO_VOLUME_MAX;
 	audio->sampleInterval = GBA_ARM7TDMI_FREQUENCY / 0x8000;
+	audio->observer = NULL;
+}
+
+static inline void _observerSync(struct GBAAudio* audio, int32_t timestamp) {
+	if (UNLIKELY(audio->observer)) {
+		audio->observer->sync(audio->observer, audio, timestamp);
+	}
 }
 
 void GBAAudioReset(struct GBAAudio* audio) {
@@ -194,6 +201,7 @@ void GBAAudioWriteSOUNDCNT_LO(struct GBAAudio* audio, uint16_t value) {
 }
 
 void GBAAudioWriteSOUNDCNT_HI(struct GBAAudio* audio, uint16_t value) {
+	_observerSync(audio, mTimingCurrentTime(&audio->p->timing));
 	audio->volume = GBARegisterSOUNDCNT_HIGetVolume(value);
 	audio->volumeChA = GBARegisterSOUNDCNT_HIGetVolumeChA(value);
 	audio->volumeChB = GBARegisterSOUNDCNT_HIGetVolumeChB(value);
@@ -211,6 +219,7 @@ void GBAAudioWriteSOUNDCNT_HI(struct GBAAudio* audio, uint16_t value) {
 		audio->chB.fifoWrite = 0;
 		audio->chB.fifoRead = 0;
 	}
+	_observerSync(audio, mTimingCurrentTime(&audio->p->timing));
 }
 
 void GBAAudioWriteSOUNDCNT_X(struct GBAAudio* audio, uint16_t value) {
@@ -230,6 +239,7 @@ void GBAAudioWriteSOUNDCNT_X(struct GBAAudio* audio, uint16_t value) {
 		audio->volumeChB = 0;
 		audio->p->memory.io[GBA_REG(SOUNDCNT_HI)] &= 0xFF00;
 	}
+	_observerSync(audio, mTimingCurrentTime(&audio->p->timing));
 }
 
 void GBAAudioWriteSOUNDBIAS(struct GBAAudio* audio, uint16_t value) {
@@ -251,6 +261,7 @@ void GBAAudioWriteSOUNDBIAS(struct GBAAudio* audio, uint16_t value) {
 }
 
 void GBAAudioWriteWaveRAM(struct GBAAudio* audio, int address, uint32_t value) {
+	_observerSync(audio, mTimingCurrentTime(&audio->p->timing));
 	int bank = !audio->psg.ch3.bank;
 
 	// When the audio hardware is turned off, it acts like bank 0 has been
@@ -264,6 +275,7 @@ void GBAAudioWriteWaveRAM(struct GBAAudio* audio, int address, uint32_t value) {
 }
 
 uint32_t GBAAudioReadWaveRAM(struct GBAAudio* audio, int address) {
+	_observerSync(audio, mTimingCurrentTime(&audio->p->timing));
 	int bank = !audio->psg.ch3.bank;
 
 	// When the audio hardware is turned off, it acts like bank 0 has been
@@ -331,6 +343,9 @@ void GBAAudioSampleFIFO(struct GBAAudio* audio, int fifoId, int32_t cycles) {
 			channel->fifoRead = 0;
 		}
 	}
+	if (UNLIKELY(audio->observer)) {
+		audio->observer->fifoSample(audio->observer, audio, fifoId, mTimingGlobalTime(&audio->p->timing) - cycles, (int8_t) channel->internalSample);
+	}
 	int32_t until = mTimingUntil(&audio->p->timing, &audio->sampleEvent) - 1;
 	int bits = 2 << GBARegisterSOUNDBIASGetResolution(audio->soundbias);
 	until += 1 << (9 - GBARegisterSOUNDBIASGetResolution(audio->soundbias));
@@ -359,6 +374,7 @@ static int _applyBias(struct GBAAudio* audio, int sample) {
 }
 
 void GBAAudioSample(struct GBAAudio* audio, int32_t timestamp) {
+	_observerSync(audio, timestamp);
 	timestamp -= audio->lastSample;
 	timestamp -= audio->sampleIndex * audio->sampleInterval; // TODO: This can break if the interval changes between samples
 
