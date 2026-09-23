@@ -124,6 +124,26 @@ MP2K signature scanner, a batch runner, and comparison tools (level/lag/
 residual between two renders, octave bands, click detection).
 `tools/fetch_set.py URL` downloads a GSF set into the gitignored `rips/`.
 
+`tools/disasm_mp2k.py GAME.minigsf OUTDIR` disassembles a game's `SoundMain`
+and `SoundMainRAM`, to check a driver revision against `mp2k.c`. Keep its
+output out of the repository; it's the game's code.
+
+References
+----------
+
+Not included here (other people's code, or unlicensed), but used while writing
+this:
+
+- pret's decompiled MP2K driver, `src/m4a_1.s` and `include/gba/m4a_internal.h`
+  in https://github.com/pret/pokeemerald (a later driver revision than
+  Mother 3's; `mp2k.c` follows Mother 3's own disassembly where they differ)
+- kode54's psflib, for `_lib` load order: https://github.com/kode54/psflib
+- lazygsf, the mGBA-based GSF library: https://buffering.party/software/lazygsf/
+- mGBA 0.10's removed "XQ" MP2K mixer, `src/gba/extra/audio-mixer.c` in the
+  0.10 branch, for what not to do
+- The 2SF player resampler with BLEP/BLAM modes:
+  https://github.com/yshui/2sftowav/blob/master/src/vio2sf/desmume/resampler.c
+
 `test/run.py path/to/gsf2wav` builds synthetic GSFs (needs clang with the ARM
 target, ld.lld, llvm-objcopy and numpy), renders them and checks aliasing,
 passband flatness, the hold-mode image level and `_lib` loading.
