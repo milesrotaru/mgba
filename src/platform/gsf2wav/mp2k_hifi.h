@@ -71,6 +71,8 @@ enum MP2KHiFiMode {
 struct MP2KHiFi {
 	enum MP2KHiFiMode mode;
 	uint32_t mutedChannels;
+	// If nonzero, only voices playing this sample (its header address) sound
+	uint32_t soloWav;
 	// Upper limit on each voice's bandwidth in Hz (0: the output's Nyquist)
 	double bandwidth;
 	// Each voice's cutoff as a fraction of the rate its source is played at

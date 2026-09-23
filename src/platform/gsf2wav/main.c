@@ -64,6 +64,7 @@ struct Options {
 	double bandwidth;
 	bool bandwidthDriver;
 	double sourceCutoff;
+	uint32_t soloWav;
 };
 
 // Receives the raw DAC inputs from the core, bypassing the core's own
@@ -470,6 +471,7 @@ static void _usage(const char* arg0) {
 		"      --ramp MS         MP2K volume change and note cut smoothing, sinc mode (default %g ms; 0 = as the driver)\n"
 		"      --mute LIST       silence sources: psg, pcm (all DirectSound), or MP2K channel numbers 0-11\n"
 		"                        (channels need high-precision mixing), e.g. --mute psg,0,3\n"
+		"      --solo-sample ADDR  only MP2K voices playing the sample at hex ADDR (implies muting PSG)\n"
 		"      --mp2k-verify     check the MP2K mixer port against the game's own mixer\n"
 		"\n"
 		"TIME is seconds or [h:]m:ss[.fff]. Without tags, length defaults to %g s and fade to %g s.\n",
@@ -489,6 +491,7 @@ static bool _parseArgs(int argc, char** argv, struct Options* opts) {
 		OPT_MUTE,
 		OPT_BANDWIDTH,
 		OPT_SOURCE_CUTOFF,
+		OPT_SOLO_SAMPLE,
 	};
 	static const struct option longOpts[] = {
 		{ "rate", required_argument, NULL, 'r' },
@@ -507,6 +510,7 @@ static bool _parseArgs(int argc, char** argv, struct Options* opts) {
 		{ "mute", required_argument, NULL, OPT_MUTE },
 		{ "mp2k-bandwidth", required_argument, NULL, OPT_BANDWIDTH },
 		{ "mp2k-source-cutoff", required_argument, NULL, OPT_SOURCE_CUTOFF },
+		{ "solo-sample", required_argument, NULL, OPT_SOLO_SAMPLE },
 		{ "help", no_argument, NULL, 'h' },
 		{ 0 }
 	};
@@ -612,6 +616,10 @@ static bool _parseArgs(int argc, char** argv, struct Options* opts) {
 			free(list);
 			break;
 		}
+		case OPT_SOLO_SAMPLE:
+			opts->soloWav = strtoul(optarg, NULL, 16);
+			opts->mutePsg = true;
+			break;
 		case OPT_SOURCE_CUTOFF:
 			opts->sourceCutoff = strtod(optarg, NULL);
 			if (opts->sourceCutoff <= 0.05 || opts->sourceCutoff > 0.5) {
@@ -755,6 +763,7 @@ int main(int argc, char** argv) {
 			hifi.mode = opts.hifiMode;
 			hifi.mutedChannels = opts.muteChannels;
 			hifi.bandwidth = opts.bandwidth;
+			hifi.soloWav = opts.soloWav;
 			if (opts.sourceCutoff > 0) {
 				hifi.sourceCutoff = opts.sourceCutoff;
 			}
