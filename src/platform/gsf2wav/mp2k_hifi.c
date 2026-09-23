@@ -212,6 +212,14 @@ static void _renderVoice(struct MP2KHiFi* hifi, struct MP2KHiFiVoice* v, const s
 	if (rate > 0 && VOICE_OUT_CUTOFF / rate < cutoff) {
 		cutoff = VOICE_OUT_CUTOFF / rate;
 	}
+	if (hifi->bandwidth > 0 && v->step > 0) {
+		// Cutoff in source samples: Hz over the rate the source is played at
+		double sourceRate = v->step * hifi->clockRate / ft->period;
+		double cap = hifi->bandwidth / sourceRate;
+		if (cap < cutoff) {
+			cutoff = cap;
+		}
+	}
 	double scale = 2 * cutoff;
 	double halfWidth = VOICE_ZERO_CROSSINGS / scale;
 	int64_t i;

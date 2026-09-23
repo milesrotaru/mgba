@@ -71,6 +71,8 @@ enum MP2KHiFiMode {
 struct MP2KHiFi {
 	enum MP2KHiFiMode mode;
 	uint32_t mutedChannels;
+	// Upper limit on each voice's bandwidth in Hz (0: the output's Nyquist)
+	double bandwidth;
 	struct BLMixer* out;
 	struct MP2KMemory* mem;
 	const uint8_t* rom;

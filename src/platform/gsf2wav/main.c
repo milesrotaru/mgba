@@ -61,6 +61,8 @@ struct Options {
 	bool mutePsg;
 	bool muteFifo;
 	uint32_t muteChannels;
+	double bandwidth;
+	bool bandwidthDriver;
 };
 
 // Receives the raw DAC inputs from the core, bypassing the core's own
@@ -111,6 +113,7 @@ struct MP2KHook {
 	bool verify;
 	struct MP2KHiFi* hifi;
 	struct GBAAudio* audio;
+	bool bandwidthDriver;
 	bool pending;
 	struct MP2KFrame frame;
 	int8_t half0[MP2K_MAX_SAMPLES_PER_VBLANK];
@@ -162,6 +165,9 @@ static void _mp2kHit(struct GBACodeHook* hook, struct GBA* gba) {
 		return;
 	}
 	if (v->hifi) {
+		if (v->bandwidthDriver && v->frame.pcmFreq > 0) {
+			v->hifi->bandwidth = v->frame.pcmFreq * 0.5;
+		}
 		double gains[2][2];
 		_fifoGains(v->audio, 0, &gains[0][0], &gains[0][1]);
 		_fifoGains(v->audio, 1, &gains[1][0], &gains[1][1]);
@@ -456,6 +462,8 @@ static void _usage(const char* arg0) {
 		"      --no-hifi         for MP2K games, output the driver's own mix instead of re-rendering its voices\n"
 		"      --mp2k-mix MODE   sinc: resample each voice from its source to the output rate (default)\n"
 		"                        linear: the driver's own resampling at its mixing rate, without its 8-bit loss\n"
+		"      --mp2k-bandwidth HZ limit each voice's bandwidth (sinc mode); \"driver\" = the driver's Nyquist.\n"
+		"                        Keeps sample grit the game's mixing rate hid from coming through\n"
 		"      --ramp MS         MP2K volume change and note cut smoothing, sinc mode (default %g ms; 0 = as the driver)\n"
 		"      --mute LIST       silence sources: psg, pcm (all DirectSound), or MP2K channel numbers 0-11\n"
 		"                        (channels need high-precision mixing), e.g. --mute psg,0,3\n"
@@ -476,6 +484,7 @@ static bool _parseArgs(int argc, char** argv, struct Options* opts) {
 		OPT_RAMP,
 		OPT_MP2K_MIX,
 		OPT_MUTE,
+		OPT_BANDWIDTH,
 	};
 	static const struct option longOpts[] = {
 		{ "rate", required_argument, NULL, 'r' },
@@ -492,6 +501,7 @@ static bool _parseArgs(int argc, char** argv, struct Options* opts) {
 		{ "ramp", required_argument, NULL, OPT_RAMP },
 		{ "mp2k-mix", required_argument, NULL, OPT_MP2K_MIX },
 		{ "mute", required_argument, NULL, OPT_MUTE },
+		{ "mp2k-bandwidth", required_argument, NULL, OPT_BANDWIDTH },
 		{ "help", no_argument, NULL, 'h' },
 		{ 0 }
 	};
@@ -597,6 +607,17 @@ static bool _parseArgs(int argc, char** argv, struct Options* opts) {
 			free(list);
 			break;
 		}
+		case OPT_BANDWIDTH:
+			if (strcmp(optarg, "driver") == 0) {
+				opts->bandwidthDriver = true;
+			} else {
+				opts->bandwidth = strtod(optarg, NULL);
+				if (opts->bandwidth < 0) {
+					fprintf(stderr, "Bad bandwidth: %s\n", optarg);
+					return false;
+				}
+			}
+			break;
 		case OPT_RAMP:
 			opts->rampMs = strtod(optarg, NULL);
 			if (opts->rampMs < 0 || opts->rampMs > 100) {
@@ -721,6 +742,8 @@ int main(int argc, char** argv) {
 			MP2KHiFiInit(&hifi, &mixer, &mp2k.mem.d, image.data, image.size, GBA_ARM7TDMI_FREQUENCY, opts.rampMs / 1000.0);
 			hifi.mode = opts.hifiMode;
 			hifi.mutedChannels = opts.muteChannels;
+			hifi.bandwidth = opts.bandwidth;
+			mp2k.bandwidthDriver = opts.bandwidthDriver;
 			mp2k.hifi = &hifi;
 		}
 		mp2k.d.hit = _mp2kHit;

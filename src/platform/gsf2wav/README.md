@@ -28,6 +28,8 @@ Usage
         --bios FILE       use a real GBA BIOS instead of the built-in HLE one
         --no-hifi         for MP2K games, output the driver's own mix instead of re-rendering its voices
         --mp2k-mix MODE   sinc (default) or linear; see below
+        --mp2k-bandwidth HZ limit each voice's bandwidth in sinc mode ("driver" = the driver's Nyquist),
+                          so sample grit the game's mixing rate hid doesn't come through
         --ramp MS         MP2K volume change and note cut smoothing, sinc mode (default 2 ms; 0 = as the driver)
         --mute LIST       silence sources: psg, pcm, or MP2K channel numbers 0-11, e.g. psg,0,3
         --mp2k-verify     check the MP2K mixer port against the game's own mixer
