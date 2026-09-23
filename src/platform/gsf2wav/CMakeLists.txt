@@ -1,6 +1,7 @@
 add_executable(gsf2wav
 	${CMAKE_CURRENT_SOURCE_DIR}/main.c
 	${CMAKE_CURRENT_SOURCE_DIR}/blmix.c
+	${CMAKE_CURRENT_SOURCE_DIR}/mp2k.c
 	${CMAKE_CURRENT_SOURCE_DIR}/psf.c)
 target_link_libraries(gsf2wav ${BINARY_NAME} ${ZLIB_LIBRARIES} m)
 set_target_properties(gsf2wav PROPERTIES COMPILE_DEFINITIONS "${OS_DEFINES};${FEATURE_DEFINES};${FUNCTION_DEFINES}")

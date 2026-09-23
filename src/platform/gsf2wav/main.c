@@ -10,9 +10,11 @@
 #include <mgba/internal/arm/isa-inlines.h>
 #include <mgba/internal/gba/audio.h>
 #include <mgba/internal/gba/gba.h>
+#include <mgba/internal/gba/memory.h>
 #include <mgba-util/vfs.h>
 
 #include "blmix.h"
+#include "mp2k.h"
 #include "psf.h"
 
 #include <errno.h>
@@ -50,6 +52,7 @@ struct Options {
 	bool useVolumeTag;
 	bool fifoHold;
 	unsigned psgGrid;
+	bool mp2kVerify;
 };
 
 // Receives the raw DAC inputs from the core, bypassing the core's own
@@ -74,6 +77,76 @@ struct Capture {
 	double fifoLongGap[2];
 	int fifoLongRun[2];
 };
+
+struct MemoryView {
+	struct MP2KMemory d;
+	struct ARMCore* cpu;
+};
+
+static uint8_t _view8(struct MP2KMemory* mem, uint32_t address) {
+	return GBAView8(((struct MemoryView*) mem)->cpu, address);
+}
+
+static uint32_t _view32(struct MP2KMemory* mem, uint32_t address) {
+	return GBAView32(((struct MemoryView*) mem)->cpu, address);
+}
+
+// Checks the MP2K port against the real driver: each frame, mix a copy of
+// the driver state, then compare with what the game wrote once it has run.
+struct MP2KVerify {
+	struct GBACodeHook d;
+	struct MemoryView mem;
+	bool pending;
+	struct MP2KFrame frame;
+	int8_t half0[MP2K_MAX_SAMPLES_PER_VBLANK];
+	int8_t half1[MP2K_MAX_SAMPLES_PER_VBLANK];
+	uint64_t frames;
+	uint64_t badFrames;
+	uint64_t badSamples;
+	uint64_t samples;
+	bool printedInfo;
+};
+
+static void _mp2kVerifyCheck(struct MP2KVerify* v) {
+	if (!v->pending) {
+		return;
+	}
+	v->pending = false;
+	int32_t j;
+	uint64_t bad = 0;
+	for (j = 0; j < v->frame.samplesPerVBlank; ++j) {
+		int8_t a = GBAView8(v->mem.cpu, v->frame.segment + j);
+		int8_t b = GBAView8(v->mem.cpu, v->frame.segment + j + MP2K_PCM_DMA_BUF_SIZE);
+		bad += (a != v->half0[j]) + (b != v->half1[j]);
+	}
+	++v->frames;
+	v->samples += v->frame.samplesPerVBlank * 2;
+	if (bad) {
+		if (v->badFrames < 5) {
+			fprintf(stderr, "MP2K verify: frame %llu differs in %llu of %d samples\n", (unsigned long long) v->frames, (unsigned long long) bad, v->frame.samplesPerVBlank * 2);
+		}
+		++v->badFrames;
+		v->badSamples += bad;
+	}
+}
+
+static void _mp2kVerifyHit(struct GBACodeHook* hook, struct GBA* gba) {
+	struct MP2KVerify* v = (struct MP2KVerify*) hook;
+	_mp2kVerifyCheck(v);
+	struct ARMCore* cpu = gba->cpu;
+	MP2KFrameRead(&v->frame, &v->mem.d, cpu->gprs[0], cpu->gprs[5]);
+	if (!v->printedInfo) {
+		v->printedInfo = true;
+		fprintf(stderr, "MP2K: SoundInfo %08X, %d Hz, %d samples/frame, %d channels, reverb %d, master volume %d, maxLines %d, DMA period %d\n",
+		        v->frame.info, v->frame.pcmFreq, v->frame.samplesPerVBlank, v->frame.maxChans, v->frame.reverb,
+		        v->frame.masterVolume, v->frame.maxLines, v->frame.pcmDmaPeriod);
+	}
+	if (v->frame.samplesPerVBlank <= 0 || v->frame.samplesPerVBlank > MP2K_MAX_SAMPLES_PER_VBLANK) {
+		return;
+	}
+	MP2KMixExact(&v->frame, &v->mem.d, v->half0, v->half1);
+	v->pending = true;
+}
 
 static void _fifoGains(struct GBAAudio* audio, int fifo, double* left, double* right) {
 	bool enableL, enableR, full, forceOff;
@@ -339,6 +412,7 @@ static void _usage(const char* arg0) {
 		"                        instead of sinc-interpolating it at its own sample rate\n"
 		"      --psg-grid CYCLES PSG sampling grid in CPU cycles (default %u)\n"
 		"      --bios FILE       use a real GBA BIOS instead of the built-in HLE one\n"
+		"      --mp2k-verify     check the MP2K mixer port against the game's own mixer\n"
 		"\n"
 		"TIME is seconds or [h:]m:ss[.fff]. Without tags, length defaults to %g s and fade to %g s.\n",
 		arg0, DEFAULT_RATE, DEFAULT_PSG_GRID, DEFAULT_LENGTH, DEFAULT_FADE);
@@ -350,6 +424,7 @@ static bool _parseArgs(int argc, char** argv, struct Options* opts) {
 		OPT_FIFO_HOLD,
 		OPT_PSG_GRID,
 		OPT_BIOS,
+		OPT_MP2K_VERIFY,
 	};
 	static const struct option longOpts[] = {
 		{ "rate", required_argument, NULL, 'r' },
@@ -361,6 +436,7 @@ static bool _parseArgs(int argc, char** argv, struct Options* opts) {
 		{ "fifo-hold", no_argument, NULL, OPT_FIFO_HOLD },
 		{ "psg-grid", required_argument, NULL, OPT_PSG_GRID },
 		{ "bios", required_argument, NULL, OPT_BIOS },
+		{ "mp2k-verify", no_argument, NULL, OPT_MP2K_VERIFY },
 		{ "help", no_argument, NULL, 'h' },
 		{ 0 }
 	};
@@ -425,6 +501,9 @@ static bool _parseArgs(int argc, char** argv, struct Options* opts) {
 			break;
 		case OPT_BIOS:
 			opts->bios = optarg;
+			break;
+		case OPT_MP2K_VERIFY:
+			opts->mp2kVerify = true;
 			break;
 		default:
 			return false;
@@ -521,6 +600,18 @@ int main(int argc, char** argv) {
 	if (image.entry >> 24 == 0x02 || image.entry >> 24 == 0x08) {
 		gba->cpu->gprs[ARM_PC] = image.entry;
 		ARMWritePC(gba->cpu);
+	}
+
+	struct MP2KVerify verify = { .mem = { .d = { .read8 = _view8, .read32 = _view32 }, .cpu = gba->cpu } };
+	if (opts.mp2kVerify) {
+		uint32_t hook = multiboot ? 0 : MP2KFindHook(image.data, image.size);
+		if (!hook) {
+			fprintf(stderr, "No MP2K driver found\n");
+			return 1;
+		}
+		fprintf(stderr, "MP2K: hooking SoundMainRAM entry at %08X\n", hook);
+		verify.d.hit = _mp2kVerifyHit;
+		GBAInstallCodeHook(gba, &verify.d, hook, MODE_THUMB);
 	}
 
 	struct BLMixer mixer;
@@ -621,6 +712,11 @@ int main(int argc, char** argv) {
 	        peak > 1 && opts.format != FORMAT_F32 ? " (clipped; lower the gain or use -b 32f)" : "");
 	if (mixer.lateEvents) {
 		fprintf(stderr, "Warning: %llu events arrived after their output was finalized\n", (unsigned long long) mixer.lateEvents);
+	}
+
+	if (opts.mp2kVerify) {
+		fprintf(stderr, "MP2K verify: %llu frames, %llu differing (%llu of %llu samples)\n", (unsigned long long) verify.frames,
+		        (unsigned long long) verify.badFrames, (unsigned long long) verify.badSamples, (unsigned long long) verify.samples);
 	}
 
 	free(buf);

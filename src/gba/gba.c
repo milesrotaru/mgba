@@ -935,6 +935,16 @@ void GBABreakpoint(struct ARMCore* cpu, int immediate) {
 		}
 		break;
 #endif
+	case CPU_COMPONENT_MISC_1:
+		if (gba->cpu->components[CPU_COMPONENT_MISC_1]) {
+			struct GBACodeHook* hook = (struct GBACodeHook*) gba->cpu->components[CPU_COMPONENT_MISC_1];
+			if (hook->address == _ARMPCAddress(cpu)) {
+				hook->hit(hook, gba);
+				ARMRunFake(cpu, hook->opcode);
+				return;
+			}
+		}
+		break;
 	case CPU_COMPONENT_CHEAT_DEVICE:
 		if (gba->cpu->components[CPU_COMPONENT_CHEAT_DEVICE]) {
 			struct mCheatDevice* device = (struct mCheatDevice*) gba->cpu->components[CPU_COMPONENT_CHEAT_DEVICE];
@@ -1044,6 +1054,21 @@ static void _triggerIRQ(struct mTiming* timing, void* user, uint32_t cyclesLate)
 	if (gba->memory.io[GBA_REG(IME)] && !gba->cpu->cpsr.i) {
 		ARMRaiseIRQ(gba->cpu);
 	}
+}
+
+static void _codeHookInit(void* cpu, struct mCPUComponent* component) {
+	UNUSED(cpu);
+	UNUSED(component);
+}
+
+void GBAInstallCodeHook(struct GBA* gba, struct GBACodeHook* hook, uint32_t address, enum ExecutionMode mode) {
+	hook->d.init = _codeHookInit;
+	hook->d.deinit = NULL;
+	hook->address = address;
+	hook->mode = mode;
+	gba->cpu->components[CPU_COMPONENT_MISC_1] = &hook->d;
+	ARMHotplugAttach(gba->cpu, CPU_COMPONENT_MISC_1);
+	GBASetBreakpoint(gba, &hook->d, address, mode, &hook->opcode);
 }
 
 void GBASetBreakpoint(struct GBA* gba, struct mCPUComponent* component, uint32_t address, enum ExecutionMode mode, uint32_t* opcode) {

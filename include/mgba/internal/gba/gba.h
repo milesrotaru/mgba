@@ -170,6 +170,19 @@ void GBADetachDebugger(struct GBA* gba);
 
 void GBASetBreakpoint(struct GBA* gba, struct mCPUComponent* component, uint32_t address, enum ExecutionMode mode,
                       uint32_t* opcode);
+
+// A single code hook for tools: `hit` is called just before the instruction
+// at `address` executes, which then runs normally. Occupies
+// CPU_COMPONENT_MISC_1; the instruction is patched in place.
+struct GBACodeHook {
+	struct mCPUComponent d;
+	void (*hit)(struct GBACodeHook*, struct GBA*);
+	uint32_t address;
+	uint32_t opcode;
+	enum ExecutionMode mode;
+};
+
+void GBAInstallCodeHook(struct GBA* gba, struct GBACodeHook* hook, uint32_t address, enum ExecutionMode mode);
 void GBAClearBreakpoint(struct GBA* gba, uint32_t address, enum ExecutionMode mode, uint32_t opcode);
 
 bool GBALoadROM(struct GBA* gba, struct VFile* vf);
