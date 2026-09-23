@@ -106,6 +106,7 @@ void MP2KHiFiDeinit(struct MP2KHiFi* hifi) {
 	free(hifi->mono);
 	free(hifi->reverbGain);
 	free(hifi->linearHistory);
+	free(hifi->stats);
 }
 
 static inline double _kernel(const struct MP2KHiFi* hifi, double u) {
@@ -321,6 +322,33 @@ static void _flush(struct MP2KHiFi* hifi, int64_t end) {
 	hifi->flushed = end;
 }
 
+static void _recordStats(struct MP2KHiFi* hifi, uint32_t wav, bool started, double rate, double seconds, double gain) {
+	size_t i;
+	for (i = 0; i < hifi->statsCount; ++i) {
+		if (hifi->stats[i].wav == wav) {
+			break;
+		}
+	}
+	if (i == hifi->statsCount) {
+		if (i == MP2K_HIFI_MAX_SAMPLE_STATS) {
+			return;
+		}
+		memset(&hifi->stats[i], 0, sizeof(hifi->stats[i]));
+		hifi->stats[i].wav = wav;
+		++hifi->statsCount;
+	}
+	struct MP2KSampleStats* st = &hifi->stats[i];
+	st->notes += started;
+	st->seconds += seconds;
+	st->rateSeconds += rate * seconds;
+	if (rate > st->maxRate) {
+		st->maxRate = rate;
+	}
+	if (gain > st->maxGain) {
+		st->maxGain = gain;
+	}
+}
+
 static void _renderFrameLinear(struct MP2KHiFi* hifi, uint64_t n, const struct MP2KFrame* frameIn, const double route[2][2]) {
 	struct MP2KFrame frame = *frameIn;
 	int32_t spv = frame.samplesPerVBlank;
@@ -447,6 +475,10 @@ static void _renderFrame(struct MP2KHiFi* hifi, uint64_t n, const struct MP2KFra
 		v->gain[0] = gain[0];
 		v->gain[1] = gain[1];
 		v->step = v->fixed ? 1.0 : (uint32_t) (ch->frequency * frame.divFreq) / 8388608.0;
+		if (hifi->collectStats) {
+			_recordStats(hifi, v->wav, started, v->step * frame.pcmFreq, (double) spv / frame.pcmFreq,
+			             gain[0] > gain[1] ? gain[0] : gain[1]);
+		}
 		_renderVoice(hifi, v, &ft, false);
 		v->u += spv * v->step;
 	}

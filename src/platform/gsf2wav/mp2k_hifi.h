@@ -60,6 +60,18 @@ struct MP2KHiFiPending {
 	double fifoGain[2][2];
 };
 
+// Per-sample usage statistics (--sample-stats)
+#define MP2K_HIFI_MAX_SAMPLE_STATS 2048
+
+struct MP2KSampleStats {
+	uint32_t wav;
+	uint32_t notes;
+	double seconds;
+	double maxRate;
+	double rateSeconds; // integral of playback rate over time, for the mean
+	double maxGain;
+};
+
 enum MP2KHiFiMode {
 	// Each voice sinc-resampled from its source straight to the output rate
 	MP2K_HIFI_SINC,
@@ -129,6 +141,10 @@ struct MP2KHiFi {
 	uint64_t lostSamples;
 	uint64_t resyncs;
 	uint64_t droppedGhosts;
+
+	bool collectStats;
+	struct MP2KSampleStats* stats;
+	size_t statsCount;
 };
 
 void MP2KHiFiInit(struct MP2KHiFi* hifi, struct BLMixer* out, struct MP2KMemory* mem, const uint8_t* rom, size_t romSize,

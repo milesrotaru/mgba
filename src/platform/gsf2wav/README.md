@@ -34,6 +34,7 @@ Usage
         --ramp MS         MP2K volume change and note cut smoothing, sinc mode (default 2 ms; 0 = as the driver)
         --mute LIST       silence sources: psg, pcm, or MP2K channel numbers 0-11, e.g. psg,0,3
         --solo-sample ADDR  only MP2K voices playing the sample whose header is at hex ADDR (mutes PSG)
+        --sample-stats    print which MP2K samples played (stdout): notes, seconds, mean/max playback rate, max gain
         --mp2k-verify     check the MP2K mixer port against the game's own mixer
 
 `_lib` chains are loaded in psflib order (`_lib`, the file itself, then
