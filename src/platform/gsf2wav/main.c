@@ -15,6 +15,7 @@
 
 #include "blmix.h"
 #include "mp2k.h"
+#include "mp2k_hifi.h"
 #include "psf.h"
 
 #include <errno.h>
@@ -29,6 +30,7 @@
 #define DEFAULT_LENGTH 150.0
 #define DEFAULT_FADE 10.0
 #define DEFAULT_PSG_GRID 8
+#define DEFAULT_RAMP_MS 2.0
 
 // Full scale of the GBA's 10-bit DAC around its bias point. A single
 // DirectSound channel at 100% volume spans exactly this.
@@ -53,6 +55,9 @@ struct Options {
 	bool fifoHold;
 	unsigned psgGrid;
 	bool mp2kVerify;
+	bool hifi;
+	enum MP2KHiFiMode hifiMode;
+	double rampMs;
 };
 
 // Receives the raw DAC inputs from the core, bypassing the core's own
@@ -76,6 +81,8 @@ struct Capture {
 	uint64_t fifoCount[2];
 	double fifoLongGap[2];
 	int fifoLongRun[2];
+
+	struct MP2KHiFi* hifi;
 };
 
 struct MemoryView {
@@ -93,9 +100,12 @@ static uint32_t _view32(struct MP2KMemory* mem, uint32_t address) {
 
 // Checks the MP2K port against the real driver: each frame, mix a copy of
 // the driver state, then compare with what the game wrote once it has run.
-struct MP2KVerify {
+struct MP2KHook {
 	struct GBACodeHook d;
 	struct MemoryView mem;
+	bool verify;
+	struct MP2KHiFi* hifi;
+	struct GBAAudio* audio;
 	bool pending;
 	struct MP2KFrame frame;
 	int8_t half0[MP2K_MAX_SAMPLES_PER_VBLANK];
@@ -107,7 +117,7 @@ struct MP2KVerify {
 	bool printedInfo;
 };
 
-static void _mp2kVerifyCheck(struct MP2KVerify* v) {
+static void _mp2kVerifyCheck(struct MP2KHook* v) {
 	if (!v->pending) {
 		return;
 	}
@@ -130,8 +140,10 @@ static void _mp2kVerifyCheck(struct MP2KVerify* v) {
 	}
 }
 
-static void _mp2kVerifyHit(struct GBACodeHook* hook, struct GBA* gba) {
-	struct MP2KVerify* v = (struct MP2KVerify*) hook;
+static void _fifoGains(struct GBAAudio* audio, int fifo, double* left, double* right);
+
+static void _mp2kHit(struct GBACodeHook* hook, struct GBA* gba) {
+	struct MP2KHook* v = (struct MP2KHook*) hook;
 	_mp2kVerifyCheck(v);
 	struct ARMCore* cpu = gba->cpu;
 	MP2KFrameRead(&v->frame, &v->mem.d, cpu->gprs[0], cpu->gprs[5]);
@@ -144,8 +156,17 @@ static void _mp2kVerifyHit(struct GBACodeHook* hook, struct GBA* gba) {
 	if (v->frame.samplesPerVBlank <= 0 || v->frame.samplesPerVBlank > MP2K_MAX_SAMPLES_PER_VBLANK) {
 		return;
 	}
-	MP2KMixExact(&v->frame, &v->mem.d, v->half0, v->half1);
-	v->pending = true;
+	if (v->hifi) {
+		double gains[2][2];
+		_fifoGains(v->audio, 0, &gains[0][0], &gains[0][1]);
+		_fifoGains(v->audio, 1, &gains[1][0], &gains[1][1]);
+		MP2KHiFiFrame(v->hifi, mTimingGlobalTime(&gba->timing), &v->frame, gains);
+	}
+	if (v->verify) {
+		struct MP2KFrame copy = v->frame;
+		MP2KMixExact(&copy, &v->mem.d, v->half0, v->half1);
+		v->pending = true;
+	}
 }
 
 static void _fifoGains(struct GBAAudio* audio, int fifo, double* left, double* right) {
@@ -216,6 +237,13 @@ static void _captureFifo(struct GBAAudioObserver* observer, struct GBAAudio* aud
 	struct Capture* cap = (struct Capture*) observer;
 	double gl, gr;
 	_fifoGains(audio, fifo, &gl, &gr);
+	bool replaced = false;
+	if (cap->hifi && !cap->hifi->failed) {
+		// The MP2K voices are rendered from the driver's state instead
+		MP2KHiFiFifo(cap->hifi, fifo, when, sample);
+		replaced = true;
+		sample = 0;
+	}
 	cap->fifoValue[fifo] = sample;
 
 	// Track the stream's sample period. A gap much longer than the last
@@ -249,7 +277,13 @@ static void _captureFifo(struct GBAAudioObserver* observer, struct GBAAudio* aud
 	}
 	cap->fifoPeriod[fifo] = period;
 
-	if (cap->fifoHold) {
+	if (replaced) {
+		if (cap->fifoLevelL[fifo] != 0 || cap->fifoLevelR[fifo] != 0) {
+			BLMixerStep(cap->mixer, when, -cap->fifoLevelL[fifo], -cap->fifoLevelR[fifo]);
+			cap->fifoLevelL[fifo] = 0;
+			cap->fifoLevelR[fifo] = 0;
+		}
+	} else if (cap->fifoHold) {
 		double l = sample * gl;
 		double r = sample * gr;
 		BLMixerStep(cap->mixer, when, l - cap->fifoLevelL[fifo], r - cap->fifoLevelR[fifo]);
@@ -412,10 +446,14 @@ static void _usage(const char* arg0) {
 		"                        instead of sinc-interpolating it at its own sample rate\n"
 		"      --psg-grid CYCLES PSG sampling grid in CPU cycles (default %u)\n"
 		"      --bios FILE       use a real GBA BIOS instead of the built-in HLE one\n"
+		"      --no-hifi         for MP2K games, output the driver's own mix instead of re-rendering its voices\n"
+		"      --mp2k-mix MODE   sinc: resample each voice from its source to the output rate (default)\n"
+		"                        linear: the driver's own resampling at its mixing rate, without its 8-bit loss\n"
+		"      --ramp MS         MP2K volume change and note cut smoothing, sinc mode (default %g ms; 0 = as the driver)\n"
 		"      --mp2k-verify     check the MP2K mixer port against the game's own mixer\n"
 		"\n"
 		"TIME is seconds or [h:]m:ss[.fff]. Without tags, length defaults to %g s and fade to %g s.\n",
-		arg0, DEFAULT_RATE, DEFAULT_PSG_GRID, DEFAULT_LENGTH, DEFAULT_FADE);
+		arg0, DEFAULT_RATE, DEFAULT_PSG_GRID, DEFAULT_RAMP_MS, DEFAULT_LENGTH, DEFAULT_FADE);
 }
 
 static bool _parseArgs(int argc, char** argv, struct Options* opts) {
@@ -425,6 +463,9 @@ static bool _parseArgs(int argc, char** argv, struct Options* opts) {
 		OPT_PSG_GRID,
 		OPT_BIOS,
 		OPT_MP2K_VERIFY,
+		OPT_NO_HIFI,
+		OPT_RAMP,
+		OPT_MP2K_MIX,
 	};
 	static const struct option longOpts[] = {
 		{ "rate", required_argument, NULL, 'r' },
@@ -437,6 +478,9 @@ static bool _parseArgs(int argc, char** argv, struct Options* opts) {
 		{ "psg-grid", required_argument, NULL, OPT_PSG_GRID },
 		{ "bios", required_argument, NULL, OPT_BIOS },
 		{ "mp2k-verify", no_argument, NULL, OPT_MP2K_VERIFY },
+		{ "no-hifi", no_argument, NULL, OPT_NO_HIFI },
+		{ "ramp", required_argument, NULL, OPT_RAMP },
+		{ "mp2k-mix", required_argument, NULL, OPT_MP2K_MIX },
 		{ "help", no_argument, NULL, 'h' },
 		{ 0 }
 	};
@@ -447,6 +491,8 @@ static bool _parseArgs(int argc, char** argv, struct Options* opts) {
 	opts->fade = -1;
 	opts->useVolumeTag = true;
 	opts->psgGrid = DEFAULT_PSG_GRID;
+	opts->hifi = true;
+	opts->rampMs = DEFAULT_RAMP_MS;
 	int c;
 	while ((c = getopt_long(argc, argv, "r:b:l:f:g:h", longOpts, NULL)) != -1) {
 		switch (c) {
@@ -504,6 +550,26 @@ static bool _parseArgs(int argc, char** argv, struct Options* opts) {
 			break;
 		case OPT_MP2K_VERIFY:
 			opts->mp2kVerify = true;
+			break;
+		case OPT_NO_HIFI:
+			opts->hifi = false;
+			break;
+		case OPT_MP2K_MIX:
+			if (strcmp(optarg, "sinc") == 0) {
+				opts->hifiMode = MP2K_HIFI_SINC;
+			} else if (strcmp(optarg, "linear") == 0) {
+				opts->hifiMode = MP2K_HIFI_LINEAR;
+			} else {
+				fprintf(stderr, "Unknown MP2K mix mode: %s\n", optarg);
+				return false;
+			}
+			break;
+		case OPT_RAMP:
+			opts->rampMs = strtod(optarg, NULL);
+			if (opts->rampMs < 0 || opts->rampMs > 100) {
+				fprintf(stderr, "Ramp must be between 0 and 100 ms\n");
+				return false;
+			}
 			break;
 		default:
 			return false;
@@ -602,26 +668,38 @@ int main(int argc, char** argv) {
 		ARMWritePC(gba->cpu);
 	}
 
-	struct MP2KVerify verify = { .mem = { .d = { .read8 = _view8, .read32 = _view32 }, .cpu = gba->cpu } };
-	if (opts.mp2kVerify) {
-		uint32_t hook = multiboot ? 0 : MP2KFindHook(image.data, image.size);
-		if (!hook) {
-			fprintf(stderr, "No MP2K driver found\n");
-			return 1;
-		}
-		fprintf(stderr, "MP2K: hooking SoundMainRAM entry at %08X\n", hook);
-		verify.d.hit = _mp2kVerifyHit;
-		GBAInstallCodeHook(gba, &verify.d, hook, MODE_THUMB);
-	}
-
 	struct BLMixer mixer;
 	BLMixerInit(&mixer, GBA_ARM7TDMI_FREQUENCY, opts.rate);
+
+	struct MP2KHook mp2k = {
+		.mem = { .d = { .read8 = _view8, .read32 = _view32 }, .cpu = gba->cpu },
+		.verify = opts.mp2kVerify,
+		.audio = &gba->audio,
+	};
+	struct MP2KHiFi hifi;
+	uint32_t hookAddress = multiboot ? 0 : MP2KFindHook(image.data, image.size);
+	if (opts.mp2kVerify && !hookAddress) {
+		fprintf(stderr, "No MP2K driver found\n");
+		return 1;
+	}
+	if (hookAddress && (opts.mp2kVerify || opts.hifi)) {
+		fprintf(stderr, "MP2K driver found; hooking SoundMainRAM entry at %08X\n", hookAddress);
+		if (opts.hifi) {
+			MP2KHiFiInit(&hifi, &mixer, &mp2k.mem.d, image.data, image.size, GBA_ARM7TDMI_FREQUENCY, opts.rampMs / 1000.0);
+			hifi.mode = opts.hifiMode;
+			mp2k.hifi = &hifi;
+		}
+		mp2k.d.hit = _mp2kHit;
+		GBAInstallCodeHook(gba, &mp2k.d, hookAddress, MODE_THUMB);
+	}
+
 	struct Capture capture = {
 		.d = { .sync = _captureSync, .fifoSample = _captureFifo },
 		.mixer = &mixer,
 		.timing = &gba->timing,
 		.fifoHold = opts.fifoHold,
 		.psgGrid = opts.psgGrid,
+		.hifi = mp2k.hifi,
 	};
 	capture.psgLast = mTimingGlobalTime(&gba->timing);
 	gba->audio.observer = &capture.d;
@@ -653,7 +731,11 @@ int main(int argc, char** argv) {
 		// Flush the PSG up to now before reading out
 		_captureSync(&capture.d, &gba->audio, mTimingCurrentTime(&gba->timing));
 		size_t n;
-		while ((n = BLMixerRead(&mixer, (double) mTimingGlobalTime(&gba->timing), buf, bufFrames)) > 0) {
+		double limit = (double) mTimingGlobalTime(&gba->timing);
+		if (mp2k.hifi && MP2KHiFiHorizon(mp2k.hifi) < limit) {
+			limit = MP2KHiFiHorizon(mp2k.hifi);
+		}
+		while ((n = BLMixerRead(&mixer, limit, buf, bufFrames)) > 0) {
 			if (n > total - produced) {
 				n = total - produced;
 			}
@@ -715,8 +797,18 @@ int main(int argc, char** argv) {
 	}
 
 	if (opts.mp2kVerify) {
-		fprintf(stderr, "MP2K verify: %llu frames, %llu differing (%llu of %llu samples)\n", (unsigned long long) verify.frames,
-		        (unsigned long long) verify.badFrames, (unsigned long long) verify.badSamples, (unsigned long long) verify.samples);
+		fprintf(stderr, "MP2K verify: %llu frames, %llu differing (%llu of %llu samples)\n", (unsigned long long) mp2k.frames,
+		        (unsigned long long) mp2k.badFrames, (unsigned long long) mp2k.badSamples, (unsigned long long) mp2k.samples);
+	}
+	if (mp2k.hifi) {
+		if (hifi.locked) {
+			fprintf(stderr, "MP2K high-precision: locked to %.2f Hz FIFO clock, FIFO A/B carry halves %d/%d, %llu resyncs, %llu samples lost\n",
+			        GBA_ARM7TDMI_FREQUENCY / hifi.latchPeriod, hifi.halfForFifo[0], hifi.halfForFifo[1],
+			        (unsigned long long) hifi.resyncs, (unsigned long long) hifi.lostSamples);
+		} else if (!hifi.failed) {
+			fprintf(stderr, "MP2K high-precision: driver never produced audible output\n");
+		}
+		MP2KHiFiDeinit(&hifi);
 	}
 
 	free(buf);

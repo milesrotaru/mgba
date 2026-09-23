@@ -6,6 +6,7 @@
 #ifndef GSF2WAV_BLMIX_H
 #define GSF2WAV_BLMIX_H
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -67,6 +68,11 @@ void BLMixerStep(struct BLMixer* mixer, double cycle, double dl, double dr);
 // Add a sample of value (l, r) centered at the given cycle, from a stream whose
 // sample period is `period` cycles.
 void BLMixerPoint(struct BLMixer* mixer, double cycle, double period, double l, double r);
+
+// Add directly to an output sample (for sources that render their own
+// band-limited signal at the output rate). Returns false if the sample was
+// already finalized or is too far ahead.
+bool BLMixerAdd(struct BLMixer* mixer, int64_t index, double l, double r);
 
 // Emit every output sample that no future event (at or after `now`) can still
 // affect. Writes interleaved stereo; returns the number of frames written.

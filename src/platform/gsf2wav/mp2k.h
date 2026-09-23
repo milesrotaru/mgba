@@ -105,6 +105,12 @@ bool MP2KChannelEnvelope(const struct MP2KFrame* frame, struct MP2KChannel* chan
 // updated as the driver would update it.
 void MP2KMixExact(struct MP2KFrame* frame, struct MP2KMemory* mem, int8_t* half0, int8_t* half1);
 
+// The same algorithm without the driver's precision loss: volumes aren't
+// truncated, and voices are summed in double precision instead of being
+// floored to bytes and wrapped. Output is in the same units (int8 LSBs).
+// Reverb isn't modeled here.
+void MP2KMixFloat(struct MP2KFrame* frame, struct MP2KMemory* mem, double* half0, double* half1);
+
 // Finds SoundMain in a ROM image and returns the address of the "bx r3" that
 // enters SoundMainRAM, or 0.
 uint32_t MP2KFindHook(const uint8_t* rom, size_t size);

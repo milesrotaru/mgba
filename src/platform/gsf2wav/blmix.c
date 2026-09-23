@@ -227,3 +227,14 @@ size_t BLMixerRead(struct BLMixer* mixer, double now, double* out, size_t maxFra
 	}
 	return n;
 }
+
+bool BLMixerAdd(struct BLMixer* mixer, int64_t index, double l, double r) {
+	if (index < (int64_t) mixer->base || index >= (int64_t) (mixer->base + mixer->capacity)) {
+		++mixer->lateEvents;
+		return false;
+	}
+	size_t idx = index & mixer->mask;
+	mixer->pointL[idx] += l;
+	mixer->pointR[idx] += r;
+	return true;
+}

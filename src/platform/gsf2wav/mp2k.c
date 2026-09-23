@@ -284,3 +284,91 @@ void MP2KMixExact(struct MP2KFrame* frame, struct MP2KMemory* mem, int8_t* half0
 		}
 	}
 }
+
+void MP2KMixFloat(struct MP2KFrame* frame, struct MP2KMemory* mem, double* half0, double* half1) {
+	int32_t spv = frame->samplesPerVBlank;
+	int32_t j;
+	for (j = 0; j < spv; ++j) {
+		half0[j] = 0;
+		half1[j] = 0;
+	}
+	int c;
+	for (c = 0; c < frame->maxChans; ++c) {
+		struct MP2KChannel* ch = &frame->chans[c];
+		if (!MP2KChannelEnvelope(frame, ch, mem)) {
+			continue;
+		}
+		uint32_t wav = ch->wav;
+		uint32_t loopStart = 0;
+		int32_t loopLength = 0;
+		if (ch->status & MP2K_SF_LOOP) {
+			uint32_t loopOffset = mem->read32(mem, wav + 0x8);
+			loopStart = wav + 0x10 + loopOffset;
+			loopLength = mem->read32(mem, wav + 0xC) - loopOffset;
+		}
+		double e = (frame->masterVolume + 1) * ch->envelopeVolume / 16.0;
+		double volR = ch->rightVolume * e / 65536.0;
+		double volL = ch->leftVolume * e / 65536.0;
+		int32_t count = ch->count;
+		uint32_t cur = ch->currentPointer;
+
+		if (ch->type & MP2K_TYPE_FIX) {
+			for (j = 0; j < spv; ++j) {
+				int32_t s = _s8(mem, cur++);
+				half0[j] += s * volR;
+				half1[j] += s * volL;
+				if (--count == 0) {
+					if (!loopLength) {
+						ch->status = 0;
+						break;
+					}
+					cur = loopStart;
+					count = loopLength;
+				}
+			}
+			continue;
+		}
+
+		uint32_t step = ch->frequency * frame->divFreq;
+		uint32_t fw = ch->fw;
+		int32_t s0 = _s8(mem, cur);
+		++cur;
+		int32_t d = _s8(mem, cur) - s0;
+		for (j = 0; j < spv; ++j) {
+			double s = s0 + d * (fw / 8388608.0);
+			half0[j] += s * volR;
+			half1[j] += s * volL;
+			fw += step;
+			uint32_t advance = fw >> 23;
+			if (!advance) {
+				continue;
+			}
+			fw &= ~0x3F800000u;
+			count -= advance;
+			if (count <= 0) {
+				if (!loopLength) {
+					ch->status = 0;
+					break;
+				}
+				int32_t offset = -count;
+				cur = loopStart;
+				while (true) {
+					count += loopLength;
+					if (count > 0) {
+						break;
+					}
+					offset -= loopLength;
+				}
+				cur += offset;
+				s0 = _s8(mem, cur);
+			} else if (advance == 1) {
+				s0 += d;
+			} else {
+				cur += advance - 1;
+				s0 = _s8(mem, cur);
+			}
+			++cur;
+			d = _s8(mem, cur) - s0;
+		}
+	}
+}
