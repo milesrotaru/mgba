@@ -63,6 +63,7 @@ struct Options {
 	uint32_t muteChannels;
 	double bandwidth;
 	bool bandwidthDriver;
+	double sourceCutoff;
 };
 
 // Receives the raw DAC inputs from the core, bypassing the core's own
@@ -464,6 +465,8 @@ static void _usage(const char* arg0) {
 		"                        linear: the driver's own resampling at its mixing rate, without its 8-bit loss\n"
 		"      --mp2k-bandwidth HZ limit each voice's bandwidth (sinc mode); \"driver\" = the driver's Nyquist.\n"
 		"                        Keeps sample grit the game's mixing rate hid from coming through\n"
+		"      --mp2k-source-cutoff F  each voice's cutoff as a fraction of its own playback rate (default 0.47);\n"
+		"                        lower trims the top of every sample's band, at any pitch\n"
 		"      --ramp MS         MP2K volume change and note cut smoothing, sinc mode (default %g ms; 0 = as the driver)\n"
 		"      --mute LIST       silence sources: psg, pcm (all DirectSound), or MP2K channel numbers 0-11\n"
 		"                        (channels need high-precision mixing), e.g. --mute psg,0,3\n"
@@ -485,6 +488,7 @@ static bool _parseArgs(int argc, char** argv, struct Options* opts) {
 		OPT_MP2K_MIX,
 		OPT_MUTE,
 		OPT_BANDWIDTH,
+		OPT_SOURCE_CUTOFF,
 	};
 	static const struct option longOpts[] = {
 		{ "rate", required_argument, NULL, 'r' },
@@ -502,6 +506,7 @@ static bool _parseArgs(int argc, char** argv, struct Options* opts) {
 		{ "mp2k-mix", required_argument, NULL, OPT_MP2K_MIX },
 		{ "mute", required_argument, NULL, OPT_MUTE },
 		{ "mp2k-bandwidth", required_argument, NULL, OPT_BANDWIDTH },
+		{ "mp2k-source-cutoff", required_argument, NULL, OPT_SOURCE_CUTOFF },
 		{ "help", no_argument, NULL, 'h' },
 		{ 0 }
 	};
@@ -607,6 +612,13 @@ static bool _parseArgs(int argc, char** argv, struct Options* opts) {
 			free(list);
 			break;
 		}
+		case OPT_SOURCE_CUTOFF:
+			opts->sourceCutoff = strtod(optarg, NULL);
+			if (opts->sourceCutoff <= 0.05 || opts->sourceCutoff > 0.5) {
+				fprintf(stderr, "Source cutoff must be between 0.05 and 0.5\n");
+				return false;
+			}
+			break;
 		case OPT_BANDWIDTH:
 			if (strcmp(optarg, "driver") == 0) {
 				opts->bandwidthDriver = true;
@@ -743,6 +755,9 @@ int main(int argc, char** argv) {
 			hifi.mode = opts.hifiMode;
 			hifi.mutedChannels = opts.muteChannels;
 			hifi.bandwidth = opts.bandwidth;
+			if (opts.sourceCutoff > 0) {
+				hifi.sourceCutoff = opts.sourceCutoff;
+			}
 			mp2k.bandwidthDriver = opts.bandwidthDriver;
 			mp2k.hifi = &hifi;
 		}

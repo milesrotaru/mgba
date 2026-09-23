@@ -81,6 +81,7 @@ void MP2KHiFiInit(struct MP2KHiFi* hifi, struct BLMixer* out, struct MP2KMemory*
 	hifi->pending = malloc(MP2K_HIFI_MAX_PENDING * sizeof(*hifi->pending));
 	hifi->pendingExact = malloc(MP2K_HIFI_MAX_PENDING * sizeof(*hifi->pendingExact));
 	hifi->horizon = INFINITY;
+	hifi->sourceCutoff = VOICE_SOURCE_CUTOFF;
 	hifi->ringMask = RING_SIZE - 1;
 	hifi->half[0] = calloc(RING_SIZE, sizeof(double));
 	hifi->half[1] = calloc(RING_SIZE, sizeof(double));
@@ -208,7 +209,7 @@ static void _renderVoice(struct MP2KHiFi* hifi, struct MP2KHiFiVoice* v, const s
 	if (rate > VOICE_MAX_RATE) {
 		rate = VOICE_MAX_RATE;
 	}
-	double cutoff = VOICE_SOURCE_CUTOFF;
+	double cutoff = hifi->sourceCutoff;
 	if (rate > 0 && VOICE_OUT_CUTOFF / rate < cutoff) {
 		cutoff = VOICE_OUT_CUTOFF / rate;
 	}

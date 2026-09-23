@@ -73,6 +73,8 @@ struct MP2KHiFi {
 	uint32_t mutedChannels;
 	// Upper limit on each voice's bandwidth in Hz (0: the output's Nyquist)
 	double bandwidth;
+	// Each voice's cutoff as a fraction of the rate its source is played at
+	double sourceCutoff;
 	struct BLMixer* out;
 	struct MP2KMemory* mem;
 	const uint8_t* rom;

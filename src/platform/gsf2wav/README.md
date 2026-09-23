@@ -30,6 +30,7 @@ Usage
         --mp2k-mix MODE   sinc (default) or linear; see below
         --mp2k-bandwidth HZ limit each voice's bandwidth in sinc mode ("driver" = the driver's Nyquist),
                           so sample grit the game's mixing rate hid doesn't come through
+        --mp2k-source-cutoff F  each voice's cutoff as a fraction of its own playback rate (default 0.47)
         --ramp MS         MP2K volume change and note cut smoothing, sinc mode (default 2 ms; 0 = as the driver)
         --mute LIST       silence sources: psg, pcm, or MP2K channel numbers 0-11, e.g. psg,0,3
         --mp2k-verify     check the MP2K mixer port against the game's own mixer
