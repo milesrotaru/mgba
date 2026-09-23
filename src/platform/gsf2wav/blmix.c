@@ -23,6 +23,7 @@
 #define SOURCE_CUTOFF 0.47
 // Lowest source-stream cutoff honored, in Hz. Bounds the kernel length.
 #define MIN_SOURCE_CUTOFF 900.0
+#define BLMIX_MIN_BUFFER_SECONDS 20.0
 
 static double _besselI0(double x) {
 	double sum = 1;
@@ -78,7 +79,10 @@ void BLMixerInit(struct BLMixer* mixer, double clockRate, double outRate) {
 
 	mixer->maxHalfWidth = (int) ceil(ZERO_CROSSINGS / (2 * mixer->minCutoff)) + 2;
 	size_t capacity = 1;
-	while (capacity < (size_t) mixer->maxHalfWidth * 8 + 0x10000) {
+	// Room for sources that hold output back while they catch up (the MP2K
+	// renderer can hold up to ~15 s before it locks onto the song's timing)
+	size_t minimum = (size_t) (outRate * BLMIX_MIN_BUFFER_SECONDS);
+	while (capacity < (size_t) mixer->maxHalfWidth * 8 + 0x10000 || capacity < minimum) {
 		capacity <<= 1;
 	}
 	mixer->capacity = capacity;

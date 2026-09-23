@@ -900,7 +900,7 @@ int main(int argc, char** argv) {
 			        GBA_ARM7TDMI_FREQUENCY / hifi.latchPeriod, hifi.halfForFifo[0], hifi.halfForFifo[1],
 			        (unsigned long long) hifi.resyncs, (unsigned long long) hifi.lostSamples, (unsigned long long) hifi.droppedGhosts);
 		} else if (!hifi.failed) {
-			fprintf(stderr, "MP2K high-precision: driver never produced audible output\n");
+			fprintf(stderr, "MP2K high-precision: the driver never produced PCM output (PSG-only track?); nothing to re-render\n");
 		}
 		size_t i;
 		for (i = 0; i < hifi.statsCount; ++i) {

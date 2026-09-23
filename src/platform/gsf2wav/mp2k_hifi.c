@@ -27,7 +27,9 @@
 // back output finalization by the same amount
 #define VOICE_PREROLL_SECONDS 0.006
 
-#define RING_SIZE (1 << 18)
+// Must hold everything rendered while waiting for the lock (LOCK_GIVE_UP
+// frames, ~15 s) plus the reverb history, at the output rate
+#define RING_SECONDS 20.0
 #define LINEAR_HISTORY_FRAMES 16
 
 #define FIFO_HISTORY 16384
@@ -82,11 +84,15 @@ void MP2KHiFiInit(struct MP2KHiFi* hifi, struct BLMixer* out, struct MP2KMemory*
 	hifi->pendingExact = malloc(MP2K_HIFI_MAX_PENDING * sizeof(*hifi->pendingExact));
 	hifi->horizon = INFINITY;
 	hifi->sourceCutoff = VOICE_SOURCE_CUTOFF;
-	hifi->ringMask = RING_SIZE - 1;
-	hifi->half[0] = calloc(RING_SIZE, sizeof(double));
-	hifi->half[1] = calloc(RING_SIZE, sizeof(double));
-	hifi->mono = calloc(RING_SIZE, sizeof(double));
-	hifi->reverbGain = calloc(RING_SIZE, sizeof(double));
+	size_t ringSize = 1;
+	while (ringSize < (size_t) (out->outRate * RING_SECONDS)) {
+		ringSize <<= 1;
+	}
+	hifi->ringMask = ringSize - 1;
+	hifi->half[0] = calloc(ringSize, sizeof(double));
+	hifi->half[1] = calloc(ringSize, sizeof(double));
+	hifi->mono = calloc(ringSize, sizeof(double));
+	hifi->reverbGain = calloc(ringSize, sizeof(double));
 	hifi->flushed = -1;
 	hifi->linearHistory = calloc(LINEAR_HISTORY_FRAMES * MP2K_MAX_SAMPLES_PER_VBLANK, sizeof(double));
 }
