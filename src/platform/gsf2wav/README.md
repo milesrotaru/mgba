@@ -1,21 +1,203 @@
 gsf2wav
 =======
 
-Renders GSF / minigsf rips to WAV using mGBA's GBA core, taking the audio
-straight from the DAC inputs instead of the core's playback path.
+A testbed for high-fidelity playback of Game Boy Advance music rips (GSF /
+minigsf), built on mGBA's GBA core. It renders a rip to WAV, using the game's
+own code on an emulated console as the source of truth, but it doesn't use
+mGBA's audio output. It takes the raw inputs to the GBA's DAC, and for games
+using Nintendo's MP2K sound driver it re-renders the driver's voices itself at
+high precision.
 
-Building
---------
+It was developed and tested on **Mother 3** (all 276 tracks of the 2006-04-20
+rip). Other MP2K games should work but haven't been tested; see
+[Status](#status-and-known-issues).
 
-    cmake -DBUILD_GSF2WAV=ON -DBUILD_QT=OFF -DBUILD_SDL=OFF ..
+Contents: [Background](#background) · [What's added, and why](#whats-added-and-why) ·
+[Results on Mother 3](#results-on-mother-3) · [Building and usage](#building-and-usage) ·
+[Status and known issues](#status-and-known-issues) ·
+[Working on this](#working-on-this-people-and-agents) · [References](#references)
+
+
+Background
+----------
+
+### How a GBA makes music
+
+The GBA has two kinds of sound hardware:
+
+- **PSG**: the four Game Boy channels (two square waves, a 4-bit wave channel,
+  noise). Hardware synthesizes these.
+- **DirectSound**: two 8-bit PCM FIFOs, fed by DMA and clocked by a timer. The
+  hardware only plays samples; software has to produce them.
+
+Most commercial games produce the DirectSound stream with Nintendo's **MP2K**
+driver (also called m4a, or "Sappy"). Once per video frame it mixes up to 12
+sampled-instrument voices in software, in a routine called `SoundMainRAM`:
+
+- each voice is linearly interpolated down to a fixed mixing rate (Mother 3
+  uses 15768 Hz, so nothing above 7.9 kHz survives)
+- each voice's contribution is floored to 8 bits
+- the voices are summed in bytes that wrap on overflow instead of clipping
+- volume envelopes move in steps, once per frame (60 Hz)
+
+So the DirectSound stream a GBA plays is already lossy before it reaches the
+DAC. On Mother 3 the 8-bit truncation alone costs about 25 dB of
+signal-to-noise on a typical track.
+
+### How emulators play it
+
+Most GSF players (lazygsf and players built on it, among others) run mGBA and
+use its normal audio output. mGBA samples the audio hardware on a grid set by
+the game's SOUNDBIAS register (usually 32768 Hz), clamps to the 10-bit DAC
+range, and resamples to the output rate. That is faithful to the hardware, but
+it adds its own resampling on top of the driver's losses.
+
+### mGBA's "XQ" mode
+
+mGBA 0.8.0 (2020) added an experimental "XQ" audio mode: a high-level
+re-implementation of the MP2K mixer that tried to render the voices at better
+quality instead of playing the driver's 8-bit mix. Some mGBA-based players
+expose it. It was known for clicks, and mGBA's unreleased 0.11 changelog
+removes it ("Remove broken XQ audio pending rewrite"). This fork is based on
+a tree without it.
+
+Reading its code (`src/gba/extra/audio-mixer.c` in mGBA 0.8–0.10) turns up
+several causes. These are code-reading findings; the code wasn't run here:
+
+- Each channel takes its key and instrument from its *track*, not from the
+  channel itself, so chords play the wrong sample data.
+- A voice's playback position is only reset if the channel happened to be
+  idle at a vblank, so a reused channel can start a new note mid-sample.
+- Every sample loops; the driver's no-loop flag is ignored.
+- Nearest-neighbour sample stepping, and volume that jumps once per update.
+- Its producer and consumer run at slightly different rates (686 vs. 685.78
+  samples per tick), and an underrun appears to read an uninitialized
+  value.
+- It switches itself off on tracks that use XCMD extended commands.
+
+The underlying problem: it approximated the driver instead of reproducing it,
+and had no way to check itself against the real thing.
+
+
+What's added, and why
+---------------------
+
+The approach here: first reproduce the driver *exactly*, prove it against the
+game every frame, and only then change the arithmetic.
+
+### Core changes (small, off unless a tool enables them)
+
+- **`GBAAudioObserver`** (`include/mgba/internal/gba/audio.h`,
+  `src/gba/audio.c`). A tool can observe the audio hardware's raw state. It
+  gets a `sync` call before every change to audio state, and a `fifoSample`
+  call with the exact CPU cycle each DirectSound sample latches at.
+  *Why:* this bypasses mGBA's sampling grid, DAC clamp and resampler, with no
+  cost when unused.
+- **`GBAInstallCodeHook`** (`include/mgba/internal/gba/gba.h`,
+  `src/gba/gba.c`). A single tool-owned code hook, built on the same
+  BKPT-patch-and-`ARMRunFake` mechanism mGBA's cheat engine uses, in the
+  `CPU_COMPONENT_MISC_1` slot.
+  *Why:* the MP2K renderer needs to run at one exact instruction every frame.
+
+### The tool (`src/platform/gsf2wav/`)
+
+| File | What it does | Why |
+|---|---|---|
+| `psf.c` | PSF/minigsf loader: zlib, CRC, tags, `_lib` chains in psflib order, case-insensitive lib lookup | Rips are usually made on case-insensitive filesystems |
+| `blmix.c` | Band-limited renderer evaluated at the output instants: steps (BLEP) and points (windowed sinc), Kaiser kernel, ~120 dB stopband, double precision | No intermediate sample rate anywhere in the chain |
+| `mp2k.c` | Literal C port of Mother 3's `SoundMainRAM` (SDK 3.0 revision): envelope state machine, fixed-frequency and interpolated paths, loop wrap, reverb, byte-lane wraparound | A model of the driver that is exact, not approximate |
+| `mp2k_hifi.c` | High-precision re-render of the driver's voices from its state | Recovers what the driver's mix throws away |
+| `main.c` | CLI, capture observer, WAV writer, MP2K hook | |
+
+How a render works:
+
+1. **PSG** is walked on an 8-cycle grid between register writes. That is the
+   wave channel's timer granularity, so every level change is caught exactly.
+   Each change is rendered as a band-limited step.
+2. **DirectSound**, for non-MP2K audio, is sinc-interpolated at its own
+   sample rate, with the exact cycle each sample latched at. `--fifo-hold`
+   renders the hardware's sample-and-hold instead.
+3. **MP2K voices**:
+   - gsf2wav finds `SoundMain` in ROM by its literal pool, and hooks the jump
+     into `SoundMainRAM`. At that point the sequencer has run and the mixer
+     hasn't.
+   - It reads the driver's channel state each frame and renders each voice
+     straight from its source PCM to the output rate, at the driver's exact
+     positions and pitches:
+     - windowed-sinc resampling, band-limited to both the sample's Nyquist and
+       the output's
+     - volumes aren't truncated, and nothing wraps
+     - volume steps are ramped over 2 ms, and cut notes fade over the same
+       time
+     - new notes start a few ms early, so the kernel's pre-ringing isn't
+       truncated
+     - the driver's reverb is modeled
+   - Timing comes from the hardware. The first audible frame's exact mix is
+     located once in the captured FIFO stream, and every frame after it is
+     placed where the hardware played it.
+4. `--mp2k-verify` runs the C port on a copy of the driver state every frame
+   and diffs the result against what the game actually wrote. That is what
+   keeps the model honest.
+
+`--mp2k-mix linear` is a middle option: the driver's own algorithm (linear
+interpolation at its mixing rate), minus the 8-bit truncation and wrap.
+
+
+Results on Mother 3
+-------------------
+
+Driver: MP2K, SDK 3.0 revision, 15768 Hz, 264 samples per frame, 12 channels.
+
+- **Port accuracy:** bit-exact against the game. 23 tracks × 60 s, 43 million
+  samples, zero differences.
+- **Coverage:**
+  - All 276 tracks rendered and encoded.
+  - Every track with PCM content locked onto the hardware's timing, with zero
+    position resyncs, zero lost samples and zero dropped fade-outs.
+  - One track ("Porky's Porkies") is PSG-only, so there's nothing to
+    re-render.
+- **Against the driver's own mix:** zero lag, and levels within 0.15 dB (the
+  driver truncates its volume values).
+  - The driver's 8-bit truncation is a −25 dB residual on a typical track.
+  - The float version of the driver's algorithm and the sinc renderer agree
+    to 0.001 dB below 2 kHz.
+  - Above the driver's 7.9 kHz ceiling, pitched-up voices now carry real
+    content, at about −38 dB.
+- **Clicks:** no systematic discontinuities at frame boundaries (>16 kHz
+  energy is flat across the frame phase), and no hard note cuts.
+- **Synthetic tests** (`test/run.py`):
+  - PSG aliasing below −160 dB
+  - square-wave harmonics within 0.001 dB of theory up to 20 kHz
+  - DirectSound images at −148 dB
+  - hold mode matches sample-and-hold theory
+  - `_lib` loading renders bit-identically to a plain GSF
+- **Speed:** about 4–12× realtime per core on Mother 3. The whole set, about
+  7 hours of audio, took about 25 minutes on 4 cores.
+
+Bugs found and fixed along the way, as a record of what the checks caught:
+
+- A running sum of sampled impulses tilted the BLEP response by
+  1/sinc(f/rate), +2.6 dB at 20 kHz.
+- An inverted rate ratio lowpassed every voice at about 2.4 kHz.
+- Quiet song intros were finalized before their audio arrived.
+- Note-ons truncated the sinc's pre-ringing, which left a click at the frame
+  boundary.
+- Output buffers were too small for a late timing lock: 0.9 s lost on
+  "Memory of Mother" at 48 kHz.
+
+
+Building and usage
+------------------
+
+    mkdir build && cd build
+    cmake .. -DBUILD_GSF2WAV=ON -DBUILD_QT=OFF -DBUILD_SDL=OFF -DUSE_FFMPEG=OFF
     make gsf2wav
 
-Requires zlib.
-
-Usage
------
+This needs zlib. The binary is `build/gsf2wav/gsf2wav`.
 
     gsf2wav [options] INPUT.minigsf OUTPUT.wav
+
+Output and length:
 
     -r, --rate HZ         output sample rate (default 48000)
     -b, --bits FMT        32f, 24 or 16 (default 32f; integer formats are TPDF dithered)
@@ -23,127 +205,126 @@ Usage
     -f, --fade TIME       fade length, overrides the fade tag
     -g, --gain DB         extra gain in dB
         --no-volume-tag   ignore the volume tag
-        --fifo-hold       reconstruct DirectSound with sample-and-hold, like the hardware
-        --psg-grid CYCLES PSG sampling grid in CPU cycles (default 8)
-        --bios FILE       use a real GBA BIOS instead of the built-in HLE one
-        --no-hifi         for MP2K games, output the driver's own mix instead of re-rendering its voices
-        --mp2k-mix MODE   sinc (default) or linear; see below
-        --mp2k-bandwidth HZ limit each voice's bandwidth in sinc mode ("driver" = the driver's Nyquist),
-                          so sample grit the game's mixing rate hid doesn't come through
-        --mp2k-source-cutoff F  each voice's cutoff as a fraction of its own playback rate (default 0.47)
-        --ramp MS         MP2K volume change and note cut smoothing, sinc mode (default 2 ms; 0 = as the driver)
-        --mute LIST       silence sources: psg, pcm, or MP2K channel numbers 0-11, e.g. psg,0,3
-        --solo-sample ADDR  only MP2K voices playing the sample whose header is at hex ADDR (mutes PSG)
-        --sample-stats    print which MP2K samples played (stdout): notes, seconds, mean/max playback rate, max gain
-        --mp2k-verify     check the MP2K mixer port against the game's own mixer
 
-`_lib` chains are loaded in psflib order (`_lib`, the file itself, then
-`_lib2`, `_lib3`, ...) and lib names are matched case-insensitively.
+TIME is seconds or `[h:]m:ss[.fff]`. Without tags, length defaults to 150 s
+and fade to 10 s.
 
-How the audio is produced
--------------------------
+MP2K rendering (on by default when the driver is found):
 
-mGBA's normal audio path samples the mixer on a grid set by the game's
-SOUNDBIAS resolution (usually 32768 Hz), clamps to the 10-bit DAC range and
-then resamples. gsf2wav bypasses all of that through a small observer hook in
-`GBAAudio`:
+        --no-hifi         output the driver's own mix instead of re-rendering its voices
+        --mp2k-mix MODE   sinc (default) or linear
+        --mp2k-bandwidth HZ   cap each voice's bandwidth; "driver" = the driver's Nyquist
+        --mp2k-source-cutoff F  each voice's cutoff as a fraction of its playback rate (default 0.47)
+        --ramp MS         volume change and note cut smoothing (default 2; 0 = the driver's steps)
 
-- **DirectSound (FIFO A/B)**: every sample is captured with the exact cycle at
-  which the FIFO latched it. By default the stream is treated as what it is, a
-  PCM signal at the game's timer rate, and is sinc-interpolated at the output
-  instants with the lowpass at the lower of the two Nyquist frequencies. That
-  removes the zero-order-hold images the real DAC produces (about -22 dB for a
-  1 kHz tone at 13379 Hz). `--fifo-hold` keeps the hold instead, rendered
-  band-limited, which is what the hardware does.
-- **PSG (channels 1-4)**: the core evaluates the PSG lazily and the hook fires
-  before every register change, so the PSG can be walked on a fine grid
-  (8 cycles by default: the wave channel's timer granularity, and a divisor
-  of the square channels' 16) and every level change rendered as a
-  band-limited step.
+Other audio:
 
-Both paths are evaluated in continuous time directly at the output sample
-instants: there's no intermediate sample rate. The kernel is a Kaiser-windowed
-sinc with 48 zero crossings and ~120 dB stopband. Mixing is in double precision
-with no clamping; output defaults to 32-bit float, and the peak level is
-reported.
+        --fifo-hold       DirectSound as the hardware's sample-and-hold, not sinc-interpolated
+        --psg-grid CYCLES PSG sampling grid (default 8, already exact)
+        --bios FILE       use a real GBA BIOS instead of mGBA's built-in one
 
-MP2K games: re-rendering the driver's voices
---------------------------------------------
+Isolation and diagnostics:
 
-Most GBA games use Nintendo's MP2K ("m4a", "Sappy") sound driver, which mixes
-all its PCM voices in software each frame: linear interpolation to a fixed
-mixing rate (often 13379 or 15768 Hz), each voice's contribution floored to
-8 bits, summed in bytes that wrap instead of clipping. The DirectSound stream
-is that mix, so the best a capture can do is reproduce it cleanly: its
-bandwidth stops at the mixing rate's Nyquist, and its noise floor is the 8-bit
-truncation. On Mother 3 that truncation alone costs about 25 dB of
-signal-to-noise on a typical track.
+        --mute LIST       silence psg, pcm, or MP2K channels 0-11, e.g. --mute psg,0,3
+        --solo-sample ADDR  only voices playing the sample whose header is at hex ADDR
+        --sample-stats    list the MP2K samples played (stdout)
+        --mp2k-verify     check the MP2K port against the game's mixer every frame
 
-When gsf2wav finds the driver (by the literal pool of `SoundMain`), it hooks
-the jump from `SoundMain` into `SoundMainRAM`. At that point the sequencer has
-run for the frame and the mixer hasn't, so the driver's channel structs say
-exactly what is about to be mixed. `mp2k.c` is a literal C port of the SDK 3.0
-`SoundMainRAM`; `--mp2k-verify` runs it on a copy of the driver state every
-frame and diffs the result against what the game writes. On Mother 3 it is
-bit-exact: 23 tracks x 60 s, 43 million samples, zero differences.
+The BIOS barely matters for Mother 3. Over 60 s of three songs it only calls
+`Halt`, `Div`, `CpuSet`, `CpuFastSet` and `LZ77UnCompVram`, all of which
+mGBA's built-in BIOS reproduces exactly. It never calls the BIOS's own sound
+routines.
 
-From that state, `mp2k_hifi.c` renders the voices itself:
+Rendering a whole set to tagged Opus (needs `opusenc`):
 
-- `--mp2k-mix sinc` (default): each voice is resampled straight from its
-  source PCM to the output rate with a windowed sinc, bandlimited to both its
-  own Nyquist and the output's, at exactly the positions and pitches the
-  driver uses. Volumes aren't truncated and nothing wraps. Envelope and volume
-  steps, which the driver applies once per frame, are ramped over `--ramp`
-  milliseconds, and cut-off voices fade out over the same time instead of
-  stopping dead. New notes are rendered from a few milliseconds before they
-  start so the sinc's pre-ringing isn't truncated. Voices pitched above the
-  mixing rate keep the high end the driver's mix had no room for.
-- `--mp2k-mix linear`: the driver's own algorithm, linear interpolation at the
-  mixing rate, just without its 8-bit truncation. Useful as a reference: it
-  differs from the driver's output only by that truncation.
+    python3 src/platform/gsf2wav/tools/render_set.py build/gsf2wav/gsf2wav SET_DIR OUT_DIR \
+        --bitrate 96 --zip out.zip -- -r 48000 -b 32f
 
-The driver's reverb (a mono feedback echo one DMA period and one period less a
-frame back) is modeled in both modes. PSG channels come from the hardware
-emulation as usual.
 
-Timing comes from the hardware. The driver's frames play back-to-back on the
-FIFO timer, so gsf2wav finds the first audible frame's exact mix in the
-captured FIFO stream once, then places every frame where the hardware played
-it. If it can't lock (or the driver isn't MP2K, or is reconfigured
-mid-song), it falls back to the captured stream.
+Status and known issues
+-----------------------
 
-Known limits: only the SDK 3.0 mixer revision is ported so far (no compressed
-or reversed samples, which later revisions added); `--mp2k-verify` will say if
-a game's driver disagrees with the port.
+- **Only the SDK 3.0 mixer revision is ported.** Later revisions added
+  compressed and reversed samples, which will render wrong. Run
+  `--mp2k-verify` on a new game first; it reports any frame where the port
+  and the game disagree.
+- **Some samples are gritty in sinc mode.** In Mother 3, track 006's organ
+  (`082ED1BC`) is a jagged, pulse-like waveform played 3–5× above its recorded
+  rate. Sinc reproduces its jumps faithfully, and the game's linear
+  interpolation smooths them over. By ear `--mp2k-mix linear` is best on it,
+  and neither bandwidth option fixes it. Simple statistics on the sample data
+  don't pick it out (see `tools/sample_noise.py`). A per-sample or per-pitch
+  switch to linear rendering is the likely fix; it isn't built yet.
+- **Tracks can clip.** Float output keeps overs (the unused Giygas battle track
+  peaks at +2.2 dBFS). Use `-g` before encoding to integer formats or lossy
+  codecs.
+- **Lengths come from tags.** There's no loop-count option yet. The robust way
+  would be reading the sequencer's GOTO commands; `tools/find_loop.py` finds
+  loop periods from audio but not loop starts.
+- **Late timing lock.** The re-render holds output until it finds the
+  driver's first audible frame in the FIFO stream. It gives up after about
+  15 s and falls back to the captured stream.
 
-Tests
------
 
-`tools/` has the scripts used during development: a Python GSF loader, the
-MP2K signature scanner, a batch runner, and comparison tools (level/lag/
-residual between two renders, octave bands, click detection).
-`tools/fetch_set.py URL` downloads a GSF set into the gitignored `rips/`.
+Working on this (people and agents)
+-----------------------------------
 
-`tools/disasm_mp2k.py GAME.minigsf OUTDIR` disassembles a game's `SoundMain`
-and `SoundMainRAM`, to check a driver revision against `mp2k.c`. Keep its
-output out of the repository; it's the game's code.
+**The repository is public, so never commit ROM-derived data:** no rips,
+renders, disassembly listings or extracted ROM images. `rips/` at the repo
+root is gitignored for GSF sets. `src/platform/gsf2wav/tools/fetch_set.py URL [name]` downloads and
+extracts a set into it. Sample addresses and statistics
+(`tools/data/mother3_sample_stats.csv`) are fine.
+
+**Checks to run before trusting a change** (paths from the repo root):
+
+1. `python3 src/platform/gsf2wav/test/run.py build/gsf2wav/gsf2wav` for the synthetic suite (needs
+   clang with the ARM target, ld.lld, llvm-objcopy and numpy). All five checks
+   must pass.
+2. `--mp2k-verify` on a few tracks of the game you're working on. It must
+   report zero differing frames. Any mixer change must keep this true.
+3. A sweep across the set. For example,
+   `python3 src/platform/gsf2wav/tools/batch.py build/gsf2wav/gsf2wav rips/mother3 --every 3 --grep high-precision -- -l 45 -f 0`
+   should report every track locked, with 0 resyncs, 0 samples lost and 0
+   fade-outs dropped.
+4. For changes that affect sound: compare renders with the tools below, and
+   A/B by ear. The measurements have caught real bugs, but the last word on
+   sound quality was always a listening test.
+
+**Tools** (`tools/`):
+
+| Script | Purpose |
+|---|---|
+| `fetch_set.py` | Download a GSF set into `rips/` |
+| `batch.py` | Run gsf2wav over a set in parallel, filtering its stderr |
+| `render_set.py` | Render a set to tagged Opus and zip it |
+| `compare.py` | Lag, gain and residual between two renders in a common band |
+| `bands.py` | Octave-band energy of several renders |
+| `residual_blocks.py` | Residual per 20 ms block, to find localized mismatches |
+| `clicks.py` | Crude click detector (high-passed energy spikes) |
+| `find_loop.py` | Loop period from a long render (start detection unreliable) |
+| `mp2k_scan.py` | Find `SoundMain` / the `SoundMainRAM` entry in a GSF |
+| `disasm_mp2k.py` | Disassemble a game's driver (keep the output out of git) |
+| `sample_stats.py` | Per-sample usage across a set (via `--sample-stats`) |
+| `sample_noise.py` | Heuristic sample-noisiness ranking (doesn't find the organ) |
+| `gsfpy.py` | Minimal Python PSF loader used by the above |
+
+Code follows mGBA's style (tabs, `CamelCase` types and functions,
+underscore-prefixed static helpers, MPL-2.0 headers). The branch history has one commit per feature or fix, and
+each message explains the measurement behind it.
+
 
 References
 ----------
 
-Not included here (other people's code, or unlicensed), but used while writing
+Other people's code, or unlicensed. Not included here, but used while writing
 this:
 
-- pret's decompiled MP2K driver, `src/m4a_1.s` and `include/gba/m4a_internal.h`
-  in https://github.com/pret/pokeemerald (a later driver revision than
-  Mother 3's; `mp2k.c` follows Mother 3's own disassembly where they differ)
-- kode54's psflib, for `_lib` load order: https://github.com/kode54/psflib
-- lazygsf, the mGBA-based GSF library: https://buffering.party/software/lazygsf/
-- mGBA 0.10's removed "XQ" MP2K mixer, `src/gba/extra/audio-mixer.c` in the
-  0.10 branch, for what not to do
-- The 2SF player resampler with BLEP/BLAM modes:
+- pret's decompiled MP2K driver: `src/m4a_1.s` and
+  `include/gba/m4a_internal.h` in https://github.com/pret/pokeemerald. This is
+  a later revision than Mother 3's; `mp2k.c` follows Mother 3's own
+  disassembly where they differ.
+- kode54's psflib, for the `_lib` load order: https://github.com/kode54/psflib
+- lazygsf, a GSF library built on mGBA: https://buffering.party/software/lazygsf/
+- mGBA's "XQ" mixer, `src/gba/extra/audio-mixer.c` in mGBA 0.8–0.10.
+- A 2SF player resampler with BLEP/BLAM modes:
   https://github.com/yshui/2sftowav/blob/master/src/vio2sf/desmume/resampler.c
-
-`test/run.py path/to/gsf2wav` builds synthetic GSFs (needs clang with the ARM
-target, ld.lld, llvm-objcopy and numpy), renders them and checks aliasing,
-passband flatness, the hold-mode image level and `_lib` loading.

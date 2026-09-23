@@ -1,3 +1,11 @@
+> **About this fork:** this branch adds **gsf2wav**, a testbed for
+> high-fidelity playback of GBA music rips (GSF/minigsf). It re-renders
+> Nintendo's MP2K sound driver at high precision. The port is verified
+> bit-exact against the game, and it has been tested on all of Mother 3. See
+> [`src/platform/gsf2wav/README.md`](src/platform/gsf2wav/README.md) for the
+> background (including mGBA's former "XQ" mode), what was added and why,
+> results, and how to work on it. Everything below is upstream mGBA's README.
+
 mGBA
 ====
 

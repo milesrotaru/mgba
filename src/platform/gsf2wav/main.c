@@ -66,6 +66,7 @@ struct Options {
 	double sourceCutoff;
 	uint32_t soloWav;
 	bool sampleStats;
+	bool help;
 };
 
 // Receives the raw DAC inputs from the core, bypassing the core's own
@@ -652,6 +653,9 @@ static bool _parseArgs(int argc, char** argv, struct Options* opts) {
 				return false;
 			}
 			break;
+		case 'h':
+			opts->help = true;
+			return false;
 		default:
 			return false;
 		}
@@ -668,7 +672,7 @@ int main(int argc, char** argv) {
 	struct Options opts;
 	if (!_parseArgs(argc, argv, &opts)) {
 		_usage(argv[0]);
-		return 1;
+		return opts.help ? 0 : 1;
 	}
 	mLogSetDefaultLogger(&_logger);
 
