@@ -29,6 +29,7 @@ Usage
         --no-hifi         for MP2K games, output the driver's own mix instead of re-rendering its voices
         --mp2k-mix MODE   sinc (default) or linear; see below
         --ramp MS         MP2K volume change and note cut smoothing, sinc mode (default 2 ms; 0 = as the driver)
+        --mute LIST       silence sources: psg, pcm, or MP2K channel numbers 0-11, e.g. psg,0,3
         --mp2k-verify     check the MP2K mixer port against the game's own mixer
 
 `_lib` chains are loaded in psflib order (`_lib`, the file itself, then

@@ -183,6 +183,7 @@ static void _ghost(struct MP2KHiFi* hifi, const struct MP2KHiFiVoice* v, double 
 			return;
 		}
 	}
+	++hifi->droppedGhosts;
 }
 
 struct FrameTiming {
@@ -197,6 +198,12 @@ struct FrameTiming {
 // starting at the frame start; mode 1 (ghost): ramps from gain to 0 starting
 // at stopTime. Positions are u + tau * step, tau in mixer samples.
 static void _renderVoice(struct MP2KHiFi* hifi, struct MP2KHiFiVoice* v, const struct FrameTiming* ft, bool ghost) {
+	if (hifi->mutedChannels & (1u << v->channel)) {
+		if (ghost) {
+			v->active = false;
+		}
+		return;
+	}
 	double rate = v->step * ft->cyclesPerOut / ft->period; // source samples per output sample
 	if (rate > VOICE_MAX_RATE) {
 		rate = VOICE_MAX_RATE;
@@ -308,6 +315,12 @@ static void _flush(struct MP2KHiFi* hifi, int64_t end) {
 static void _renderFrameLinear(struct MP2KHiFi* hifi, uint64_t n, const struct MP2KFrame* frameIn, const double route[2][2]) {
 	struct MP2KFrame frame = *frameIn;
 	int32_t spv = frame.samplesPerVBlank;
+	int c;
+	for (c = 0; c < MP2K_MAX_CHANNELS; ++c) {
+		if (hifi->mutedChannels & (1u << c)) {
+			frame.chans[c].status = 0;
+		}
+	}
 	double half0[MP2K_MAX_SAMPLES_PER_VBLANK];
 	double half1[MP2K_MAX_SAMPLES_PER_VBLANK];
 	MP2KMixFloat(&frame, hifi->mem, half0, half1);
@@ -403,6 +416,7 @@ static void _renderFrame(struct MP2KHiFi* hifi, uint64_t n, const struct MP2KFra
 				v->active = false;
 				continue;
 			}
+			v->channel = c;
 			v->u = pos;
 			v->prevGain[0] = gain[0];
 			v->prevGain[1] = gain[1];

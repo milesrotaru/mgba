@@ -58,6 +58,9 @@ struct Options {
 	bool hifi;
 	enum MP2KHiFiMode hifiMode;
 	double rampMs;
+	bool mutePsg;
+	bool muteFifo;
+	uint32_t muteChannels;
 };
 
 // Receives the raw DAC inputs from the core, bypassing the core's own
@@ -68,6 +71,8 @@ struct Capture {
 	struct mTiming* timing;
 	bool fifoHold;
 	unsigned psgGrid;
+	bool mutePsg;
+	bool muteFifo;
 
 	uint64_t psgLast;
 	double psgL;
@@ -203,7 +208,7 @@ static void _captureSync(struct GBAAudioObserver* observer, struct GBAAudio* aud
 		int16_t l = 0;
 		int16_t r = 0;
 		GBAudioSamplePSG(&audio->psg, &l, &r);
-		double scale = 1.0 / (1 << (4 - audio->volume)) / DAC_SCALE;
+		double scale = cap->mutePsg ? 0 : 1.0 / (1 << (4 - audio->volume)) / DAC_SCALE;
 		double sl = l * scale;
 		double sr = r * scale;
 		if (sl != cap->psgL || sr != cap->psgR) {
@@ -242,6 +247,8 @@ static void _captureFifo(struct GBAAudioObserver* observer, struct GBAAudio* aud
 		// The MP2K voices are rendered from the driver's state instead
 		MP2KHiFiFifo(cap->hifi, fifo, when, sample);
 		replaced = true;
+		sample = 0;
+	} else if (cap->muteFifo) {
 		sample = 0;
 	}
 	cap->fifoValue[fifo] = sample;
@@ -450,6 +457,8 @@ static void _usage(const char* arg0) {
 		"      --mp2k-mix MODE   sinc: resample each voice from its source to the output rate (default)\n"
 		"                        linear: the driver's own resampling at its mixing rate, without its 8-bit loss\n"
 		"      --ramp MS         MP2K volume change and note cut smoothing, sinc mode (default %g ms; 0 = as the driver)\n"
+		"      --mute LIST       silence sources: psg, pcm (all DirectSound), or MP2K channel numbers 0-11\n"
+		"                        (channels need high-precision mixing), e.g. --mute psg,0,3\n"
 		"      --mp2k-verify     check the MP2K mixer port against the game's own mixer\n"
 		"\n"
 		"TIME is seconds or [h:]m:ss[.fff]. Without tags, length defaults to %g s and fade to %g s.\n",
@@ -466,6 +475,7 @@ static bool _parseArgs(int argc, char** argv, struct Options* opts) {
 		OPT_NO_HIFI,
 		OPT_RAMP,
 		OPT_MP2K_MIX,
+		OPT_MUTE,
 	};
 	static const struct option longOpts[] = {
 		{ "rate", required_argument, NULL, 'r' },
@@ -481,6 +491,7 @@ static bool _parseArgs(int argc, char** argv, struct Options* opts) {
 		{ "no-hifi", no_argument, NULL, OPT_NO_HIFI },
 		{ "ramp", required_argument, NULL, OPT_RAMP },
 		{ "mp2k-mix", required_argument, NULL, OPT_MP2K_MIX },
+		{ "mute", required_argument, NULL, OPT_MUTE },
 		{ "help", no_argument, NULL, 'h' },
 		{ 0 }
 	};
@@ -564,6 +575,28 @@ static bool _parseArgs(int argc, char** argv, struct Options* opts) {
 				return false;
 			}
 			break;
+		case OPT_MUTE: {
+			char* list = strdup(optarg);
+			char* tok;
+			for (tok = strtok(list, ","); tok; tok = strtok(NULL, ",")) {
+				char* end;
+				long ch = strtol(tok, &end, 10);
+				if (strcmp(tok, "psg") == 0) {
+					opts->mutePsg = true;
+				} else if (strcmp(tok, "fifo") == 0 || strcmp(tok, "pcm") == 0) {
+					opts->muteFifo = true;
+					opts->muteChannels = 0xFFFFFFFF;
+				} else if (*tok && !*end && ch >= 0 && ch < MP2K_MAX_CHANNELS) {
+					opts->muteChannels |= 1u << ch;
+				} else {
+					fprintf(stderr, "Unknown --mute entry: %s\n", tok);
+					free(list);
+					return false;
+				}
+			}
+			free(list);
+			break;
+		}
 		case OPT_RAMP:
 			opts->rampMs = strtod(optarg, NULL);
 			if (opts->rampMs < 0 || opts->rampMs > 100) {
@@ -687,6 +720,7 @@ int main(int argc, char** argv) {
 		if (opts.hifi) {
 			MP2KHiFiInit(&hifi, &mixer, &mp2k.mem.d, image.data, image.size, GBA_ARM7TDMI_FREQUENCY, opts.rampMs / 1000.0);
 			hifi.mode = opts.hifiMode;
+			hifi.mutedChannels = opts.muteChannels;
 			mp2k.hifi = &hifi;
 		}
 		mp2k.d.hit = _mp2kHit;
@@ -699,6 +733,8 @@ int main(int argc, char** argv) {
 		.timing = &gba->timing,
 		.fifoHold = opts.fifoHold,
 		.psgGrid = opts.psgGrid,
+		.mutePsg = opts.mutePsg,
+		.muteFifo = opts.muteFifo,
 		.hifi = mp2k.hifi,
 	};
 	capture.psgLast = mTimingGlobalTime(&gba->timing);
@@ -802,9 +838,9 @@ int main(int argc, char** argv) {
 	}
 	if (mp2k.hifi) {
 		if (hifi.locked) {
-			fprintf(stderr, "MP2K high-precision: locked to %.2f Hz FIFO clock, FIFO A/B carry halves %d/%d, %llu resyncs, %llu samples lost\n",
+			fprintf(stderr, "MP2K high-precision: locked to %.2f Hz FIFO clock, FIFO A/B carry halves %d/%d, %llu resyncs, %llu samples lost, %llu voice fade-outs dropped\n",
 			        GBA_ARM7TDMI_FREQUENCY / hifi.latchPeriod, hifi.halfForFifo[0], hifi.halfForFifo[1],
-			        (unsigned long long) hifi.resyncs, (unsigned long long) hifi.lostSamples);
+			        (unsigned long long) hifi.resyncs, (unsigned long long) hifi.lostSamples, (unsigned long long) hifi.droppedGhosts);
 		} else if (!hifi.failed) {
 			fprintf(stderr, "MP2K high-precision: driver never produced audible output\n");
 		}

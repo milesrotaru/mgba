@@ -37,6 +37,7 @@ struct MP2KHiFiVoice {
 	int64_t loopStart;
 	int64_t loopLength;
 	bool fixed;
+	int channel;
 
 	// Unwrapped position in source samples at the start of the current frame,
 	// and the step per mixer sample
@@ -69,6 +70,7 @@ enum MP2KHiFiMode {
 
 struct MP2KHiFi {
 	enum MP2KHiFiMode mode;
+	uint32_t mutedChannels;
 	struct BLMixer* out;
 	struct MP2KMemory* mem;
 	const uint8_t* rom;
@@ -120,6 +122,7 @@ struct MP2KHiFi {
 	double horizon;
 	uint64_t lostSamples;
 	uint64_t resyncs;
+	uint64_t droppedGhosts;
 };
 
 void MP2KHiFiInit(struct MP2KHiFi* hifi, struct BLMixer* out, struct MP2KMemory* mem, const uint8_t* rom, size_t romSize,
