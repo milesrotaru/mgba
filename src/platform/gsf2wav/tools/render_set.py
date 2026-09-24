@@ -52,6 +52,7 @@ def main():
                          ('date', t.get('year')), ('tracknumber', m.group(1).lstrip('0') if m else None),
                          ('copyright', t.get('copyright')),
                          ('comment', 'Rendered with gsf2wav (mGBA), MP2K high-precision mixing' +
+                          (f'; options: {" ".join(extra)}' if extra else '') +
                           (f'; track options: {" ".join(track_opts)}' if track_opts else ''))):
             if val:
                 cmd += ['--comment', f'{key.upper()}={val}']
