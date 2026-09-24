@@ -33,7 +33,11 @@
 #define LINEAR_HISTORY_FRAMES 16
 
 #define FIFO_HISTORY 16384
-#define LOCK_PATTERN 32
+#define LOCK_PATTERN 64
+// A window needs this many sample-to-sample changes to be worth searching for
+#define LOCK_MIN_CHANGES 12
+// How many frames ahead to look for a confirming window
+#define LOCK_CONFIRM_FRAMES 60
 #define LOCK_GIVE_UP 900
 
 static double _besselI0(double x) {
@@ -544,60 +548,102 @@ static void _renderFrame(struct MP2KHiFi* hifi, uint64_t n, const struct MP2KFra
 	hifi->horizon = hifi->flushed * ft.cyclesPerOut;
 }
 
-static bool _audible(const int8_t* pattern) {
+static int _changes(const int8_t* pattern) {
 	int i;
-	int distinct = 0;
+	int changes = 0;
 	for (i = 1; i < LOCK_PATTERN; ++i) {
-		distinct += pattern[i] != pattern[i - 1];
+		changes += pattern[i] != pattern[i - 1];
 	}
-	return distinct >= LOCK_PATTERN / 2;
+	return changes;
 }
 
-static int64_t _findPattern(const struct MP2KHiFi* hifi, int fifo, const int8_t* pattern) {
+// Picks the most distinctive window of a frame's exact mix to search for
+static void _pickWindow(struct MP2KLockWindow* w, const int8_t* half, int32_t spv) {
+	memset(w, 0, sizeof(*w));
+	if (spv < LOCK_PATTERN) {
+		return;
+	}
+	int best = -1;
+	int32_t o;
+	for (o = 0; o + LOCK_PATTERN <= spv; o += 8) {
+		int c = _changes(&half[o]);
+		if (c > best) {
+			best = c;
+			w->offset = o;
+		}
+	}
+	memcpy(w->data, &half[w->offset], LOCK_PATTERN);
+	w->usable = best >= LOCK_MIN_CHANGES;
+}
+
+// Index of the pattern in the FIFO history if it occurs exactly once; -1 if
+// it doesn't occur, -2 if it's ambiguous
+static int64_t _findUnique(const struct MP2KHiFi* hifi, int fifo, const int8_t* pattern) {
 	const int8_t* h = hifi->fifoHistory[fifo];
 	size_t n = hifi->fifoCount[fifo];
+	int64_t found = -1;
 	size_t i;
 	for (i = 0; i + LOCK_PATTERN <= n; ++i) {
 		if (h[i] == pattern[0] && memcmp(&h[i], pattern, LOCK_PATTERN) == 0) {
-			return i;
+			if (found >= 0) {
+				return -2;
+			}
+			found = i;
 		}
 	}
-	return -1;
+	return found;
 }
 
 static void _tryLock(struct MP2KHiFi* hifi) {
+	int32_t spv = hifi->samplesPerVBlank;
 	size_t p;
-	for (p = 0; p + 1 < hifi->pendingCount; ++p) {
+	for (p = 0; p < hifi->pendingCount; ++p) {
 		int half;
 		for (half = 0; half < 2; ++half) {
-			if (!_audible(hifi->pendingExact[p][half]) || !_audible(hifi->pendingExact[p + 1][half])) {
+			const struct MP2KLockWindow* wp = &hifi->pendingExact[p][half];
+			if (!wp->usable) {
 				continue;
 			}
 			int f;
 			for (f = 0; f < 2; ++f) {
-				int64_t at = _findPattern(hifi, f, hifi->pendingExact[p][half]);
+				int64_t at = _findUnique(hifi, f, wp->data);
 				if (at < 0) {
 					continue;
 				}
-				// Confirm with the next frame, one frame's worth of samples later
-				int64_t next = at + hifi->samplesPerVBlank;
-				if (next + LOCK_PATTERN > (int64_t) hifi->fifoCount[f] ||
-				    memcmp(&hifi->fifoHistory[f][next], hifi->pendingExact[p + 1][half], LOCK_PATTERN) != 0) {
+				// Confirm with a later distinctive window at its predicted place
+				size_t q;
+				int64_t predicted = -1;
+				for (q = p + 1; q < hifi->pendingCount && q <= p + LOCK_CONFIRM_FRAMES; ++q) {
+					const struct MP2KLockWindow* wq = &hifi->pendingExact[q][half];
+					if (!wq->usable) {
+						continue;
+					}
+					predicted = at - wp->offset + (int64_t) (q - p) * spv + wq->offset;
+					if (predicted + LOCK_PATTERN > (int64_t) hifi->fifoCount[f] ||
+					    memcmp(&hifi->fifoHistory[f][predicted], wq->data, LOCK_PATTERN) != 0) {
+						predicted = -1;
+					}
+					break;
+				}
+				if (predicted < 0) {
 					continue;
 				}
 				const uint64_t* times = hifi->fifoTimes[f];
-				hifi->latchPeriod = (double) (times[next] - times[at]) / hifi->samplesPerVBlank;
-				hifi->t0 = times[at] - (double) (hifi->frameIndex + p) * hifi->samplesPerVBlank * hifi->latchPeriod;
+				hifi->latchPeriod = (double) (times[predicted] - times[at]) / (double) (predicted - at);
+				hifi->t0 = times[at] - ((double) (hifi->frameIndex + p) * spv + wp->offset) * hifi->latchPeriod;
 				hifi->halfForFifo[f] = half;
 				// The other FIFO normally carries the other half
 				int other = 1 - f;
 				hifi->halfForFifo[other] = -1;
 				if (hifi->fifoCount[other]) {
-					int64_t o = _findPattern(hifi, other, hifi->pendingExact[p][1 - half]);
-					if (o >= 0) {
+					const struct MP2KLockWindow* wo = &hifi->pendingExact[p][1 - half];
+					if (wo->usable && _findUnique(hifi, other, wo->data) >= 0) {
 						hifi->halfForFifo[other] = 1 - half;
-					} else if (_findPattern(hifi, other, hifi->pendingExact[p][half]) >= 0) {
+					} else if (_findUnique(hifi, other, wp->data) >= 0) {
 						hifi->halfForFifo[other] = half;
+					} else {
+						// Not distinctive enough to tell; the usual layout
+						hifi->halfForFifo[other] = 1 - half;
 					}
 				}
 				hifi->locked = true;
@@ -670,8 +716,8 @@ void MP2KHiFiFrame(struct MP2KHiFi* hifi, uint64_t hookTime, const struct MP2KFr
 	int8_t half0[MP2K_MAX_SAMPLES_PER_VBLANK];
 	int8_t half1[MP2K_MAX_SAMPLES_PER_VBLANK];
 	MP2KMixExact(&copy, hifi->mem, half0, half1);
-	memcpy(hifi->pendingExact[hifi->pendingCount][0], half0, LOCK_PATTERN);
-	memcpy(hifi->pendingExact[hifi->pendingCount][1], half1, LOCK_PATTERN);
+	_pickWindow(&hifi->pendingExact[hifi->pendingCount][0], half0, frame->samplesPerVBlank);
+	_pickWindow(&hifi->pendingExact[hifi->pendingCount][1], half1, frame->samplesPerVBlank);
 	++hifi->pendingCount;
 	// A frame plays after its hook, so nothing from the first pending frame on
 	// may be finalized until it's rendered

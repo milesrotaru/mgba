@@ -1,0 +1,12 @@
+# Per-track gsf2wav options for Wario Land 4 (2001-08-21 rip), applied by
+#   render_set.py ... --overrides tools/data/wl4_overrides.txt
+# Format: track filename prefix (up to the first space), then gsf2wav options.
+
+# These peak between -0.5 and +0.7 dBFS in float; bring each to about -1 dBFS
+# so integer and lossy output (Opus overshoots a little) doesn't clip.
+002 -g -1.3
+067 -g -0.7
+071 -g -1.0
+074 -g -1.0
+075 -g -1.0
+076 -g -1.7

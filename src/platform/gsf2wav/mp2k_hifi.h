@@ -126,7 +126,12 @@ struct MP2KHiFi {
 
 	struct MP2KHiFiPending* pending;
 	size_t pendingCount;
-	int8_t (*pendingExact)[2][32];
+	// Per pending frame and half: the most distinctive window of the exact mix
+	struct MP2KLockWindow {
+		int8_t data[64];
+		int16_t offset;
+		bool usable;
+	} (*pendingExact)[2];
 
 	// Sinc mode: voices render into per-half buffers at the output rate, which
 	// are flushed in order through the driver's reverb and the FIFO routing

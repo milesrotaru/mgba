@@ -8,8 +8,9 @@ mGBA's audio output. It takes the raw inputs to the GBA's DAC, and for games
 using Nintendo's MP2K sound driver it re-renders the driver's voices itself at
 high precision.
 
-It was developed and tested on **Mother 3** (all 276 tracks of the 2006-04-20
-rip). Other MP2K games should work but haven't been tested; see
+It was developed on **Mother 3** (all 276 tracks of the 2006-04-20 rip) and
+also tested on **Wario Land 4** (all 113 tracks of the 2001-08-21 rip).
+Other MP2K games should work; `--mp2k-verify` checks a new one. See
 [Status](#status-and-known-issues).
 
 Contents: [Background](#background) · [What's added, and why](#whats-added-and-why) ·
@@ -132,9 +133,11 @@ How a render works:
      - new notes start a few ms early, so the kernel's pre-ringing isn't
        truncated
      - the driver's reverb is modeled
-   - Timing comes from the hardware. The first audible frame's exact mix is
-     located once in the captured FIFO stream, and every frame after it is
-     placed where the hardware played it.
+   - Timing comes from the hardware. For each queued frame, the most
+     distinctive 64-sample stretch of its exact mix is found in the captured
+     FIFO stream. It must match exactly once, and a later frame must confirm
+     it at the predicted place. Every frame from then on is placed where the
+     hardware played it.
 4. `--mp2k-verify` runs the C port on a copy of the driver state every frame
    and diffs the result against what the game actually wrote. That is what
    keeps the model honest.
@@ -173,6 +176,26 @@ Driver: MP2K, SDK 3.0 revision, 15768 Hz, 264 samples per frame, 12 channels.
   - `_lib` loading renders bit-identically to a plain GSF
 - **Speed:** about 4–12× realtime per core on Mother 3. The whole set, about
   7 hours of audio, took about 25 minutes on 4 cores.
+
+Results on Wario Land 4
+-----------------------
+
+Driver: the same MP2K revision, configured differently: 13379 Hz, 224 samples
+per frame, 8 channels, a DMA period of 7, and `maxLines` 70.
+
+- **Port accuracy:** bit-exact with no changes. 19 tracks × 60 s, 30 million
+  samples, zero differences.
+- **Coverage:** all 113 tracks locked and rendered cleanly. "Wario's
+  Roulette" originally failed to lock: its only instrument is a 96-byte
+  looping wave, and the old lock (the first 32 samples of two consecutive
+  frames) never found a distinctive enough snippet. That led to the current
+  lock.
+- **Same caveat as Mother 3's organ:** tiny synth waves pitched well up (here
+  2.5–5.5×) sound clean in sinc and aliased in the game's own mix. Which one
+  is right is a matter of taste.
+- **`maxLines`:** when nonzero, the driver skips voices if the CPU runs late
+  in a frame. The port doesn't model it. It never triggered in these rips
+  (zero differences), but it could matter during real gameplay.
 
 Bugs found and fixed along the way, as a record of what the checks caught:
 
@@ -245,7 +268,8 @@ Rendering a whole set to tagged Opus (needs `opusenc`):
 An overrides file gives per-track options (one line each: track filename
 prefix, then gsf2wav options). Mother 3's is
 `tools/data/mother3_overrides.txt`: it renders 006's organ linearly and lowers
-918 by 3 dB. The full command that produced the delivered set:
+four tracks' levels. Wario Land 4's is `tools/data/wl4_overrides.txt`. The
+full command that produced the delivered Mother 3 set:
 
     python3 src/platform/gsf2wav/tools/render_set.py build/gsf2wav/gsf2wav rips/mother3 OUT_DIR \
         --bitrate 96 --zip "Mother 3.zip" \
@@ -270,9 +294,11 @@ Status and known issues
   is only used in 006. Simple statistics on the sample data don't pick out
   samples like this (see `tools/sample_noise.py`), so overrides are chosen by
   ear, with `--solo-sample` and `--sample-stats` to find the candidates.
-- **Tracks can clip.** Float output keeps overs (the unused Giygas battle track
-  peaks at +2.2 dBFS). Use `-g` before encoding to integer formats or lossy
-  codecs.
+- **Tracks can clip.** Float output keeps overs (Mother 3's unused Giygas
+  battle track peaks at +2.2 dBFS). Lossy encoding also overshoots: Opus
+  pushed three Mother 3 tracks with float peaks of −0.07 to −0.33 dBFS past
+  0 dBFS once decoded. Keep peaks around −1 dBFS with `-g` (per track, via an
+  overrides file), and check by decoding (`opusdec --float`).
 - **Lengths come from tags.** There's no loop-count option yet. The robust way
   would be reading the sequencer's GOTO commands; `tools/find_loop.py` finds
   loop periods from audio but not loop starts.
