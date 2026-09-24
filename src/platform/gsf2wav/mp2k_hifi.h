@@ -82,9 +82,8 @@ enum MP2KHiFiMode {
 	MP2K_HIFI_LINEAR,
 	// Each voice linearly interpolated from its source straight at the output
 	// rate, like the linear option in many sequenced-audio players: no
-	// bandlimiting, so pitched-up
-	// samples alias and images leak above the source band, but nothing is
-	// lost to the driver's mixing rate
+	// bandlimiting, so pitched-up samples alias and images leak above the
+	// source band, but nothing is lost to the driver's mixing rate
 	MP2K_HIFI_LERP,
 };
 
