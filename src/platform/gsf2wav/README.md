@@ -286,11 +286,12 @@ An overrides file gives per-track options (one line each: track filename
 prefix, then gsf2wav options). Mother 3's is
 `tools/data/mother3_overrides.txt`: it renders 006's organ linearly and lowers
 four tracks' levels. Wario Land 4's is `tools/data/wl4_overrides.txt`. The
-full command that produced the delivered Mother 3 set:
+current delivered sets use blam, the preferred mode by ear; the same overrides
+hold, and every track's decoded Opus peak stays under 0 dBFS. For Mother 3:
 
     python3 src/platform/gsf2wav/tools/render_set.py build/gsf2wav/gsf2wav rips/mother3 OUT_DIR \
-        --bitrate 96 --zip "Mother 3.zip" \
-        --overrides src/platform/gsf2wav/tools/data/mother3_overrides.txt -- -r 48000 -b 32f
+        --bitrate 96 --overrides src/platform/gsf2wav/tools/data/mother3_overrides.txt \
+        -- -r 48000 -b 32f --mp2k-mix blam
 
 
 Status and known issues
