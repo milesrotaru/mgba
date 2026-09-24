@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 # Renders every (mini)GSF in a set with gsf2wav, encodes each to Opus with the
 # rip's tags, and zips the result. Needs opusenc (opus-tools).
-#   render_set.py GSF2WAV SET_DIR OUT_DIR [--bitrate KBPS] [--zip NAME.zip] [-- gsf2wav args]
-import argparse, concurrent.futures, glob, os, re, struct, subprocess, sys, zipfile
+#   render_set.py GSF2WAV SET_DIR OUT_DIR [--bitrate KBPS] [--zip NAME.zip]
+#                 [--overrides FILE] [-- gsf2wav args]
+# An overrides file lists per-track gsf2wav options: each line is a track
+# filename prefix (up to its first space), then options; # starts a comment.
+import argparse, concurrent.futures, glob, os, re, shlex, struct, subprocess, sys, zipfile
 import gsfpy
 
 def tags_of(path):
@@ -22,7 +25,15 @@ def main():
     p.add_argument('out_dir')
     p.add_argument('--bitrate', type=int, default=96)
     p.add_argument('--zip')
+    p.add_argument('--overrides')
     a = p.parse_args(argv)
+    overrides = {}
+    if a.overrides:
+        for line in open(a.overrides):
+            line = line.split('#', 1)[0].strip()
+            if line:
+                key, _, opts = line.partition(' ')
+                overrides[key] = shlex.split(opts)
     os.makedirs(a.out_dir, exist_ok=True)
     files = sorted(glob.glob(os.path.join(a.set_dir, '*.minigsf')) + glob.glob(os.path.join(a.set_dir, '*.gsf')))
 
@@ -30,7 +41,8 @@ def main():
         base = os.path.splitext(os.path.basename(f))[0]
         wav = os.path.join(a.out_dir, base + '.wav')
         out = os.path.join(a.out_dir, base + '.opus')
-        r = subprocess.run([a.exe] + extra + [f, wav], capture_output=True, text=True)
+        track_opts = overrides.get(base.split(' ', 1)[0], [])
+        r = subprocess.run([a.exe] + extra + track_opts + [f, wav], capture_output=True, text=True)
         if r.returncode:
             return base, False, r.stderr.strip().splitlines()[-1:]
         t = tags_of(f)
@@ -38,12 +50,16 @@ def main():
         m = re.match(r'(\d+)', base)
         for key, val in (('title', t.get('title')), ('artist', t.get('artist')), ('album', t.get('game')),
                          ('date', t.get('year')), ('tracknumber', m.group(1).lstrip('0') if m else None),
-                         ('copyright', t.get('copyright')), ('comment', 'Rendered with gsf2wav (mGBA), MP2K high-precision mixing')):
+                         ('copyright', t.get('copyright')),
+                         ('comment', 'Rendered with gsf2wav (mGBA), MP2K high-precision mixing' +
+                          (f'; track options: {" ".join(track_opts)}' if track_opts else ''))):
             if val:
                 cmd += ['--comment', f'{key.upper()}={val}']
         r2 = subprocess.run(cmd + [wav, out], capture_output=True, text=True)
         os.remove(wav)
         peak = [l for l in r.stderr.splitlines() if l.startswith('Peak') or 'high-precision' in l]
+        if track_opts:
+            peak.append('options: ' + ' '.join(track_opts))
         return base, r2.returncode == 0, peak
 
     ok = 0

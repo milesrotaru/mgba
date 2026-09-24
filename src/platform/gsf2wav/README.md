@@ -240,7 +240,16 @@ routines.
 Rendering a whole set to tagged Opus (needs `opusenc`):
 
     python3 src/platform/gsf2wav/tools/render_set.py build/gsf2wav/gsf2wav SET_DIR OUT_DIR \
-        --bitrate 96 --zip out.zip -- -r 48000 -b 32f
+        --bitrate 96 --zip out.zip [--overrides FILE] -- -r 48000 -b 32f
+
+An overrides file gives per-track options (one line each: track filename
+prefix, then gsf2wav options). Mother 3's is
+`tools/data/mother3_overrides.txt`: it renders 006's organ linearly and lowers
+918 by 3 dB. The full command that produced the delivered set:
+
+    python3 src/platform/gsf2wav/tools/render_set.py build/gsf2wav/gsf2wav rips/mother3 OUT_DIR \
+        --bitrate 96 --zip "Mother 3.zip" \
+        --overrides src/platform/gsf2wav/tools/data/mother3_overrides.txt -- -r 48000 -b 32f
 
 
 Status and known issues

@@ -1,0 +1,11 @@
+# Per-track gsf2wav options for Mother 3 (2006-04-20 rip), applied by
+#   render_set.py ... --overrides tools/data/mother3_overrides.txt
+# Format: track filename prefix (up to the first space), then gsf2wav options.
+# Options here are added after the set-wide ones, so they can override them.
+
+# Organ sample 082ED1BC is gritty in sinc mode (jagged waveform played 3-5x up);
+# render it the way the driver does. Everything else in the song stays sinc.
+006 --mp2k-linear-samples 082ED1BC
+
+# Peaks at +2.2 dBFS; lower it so integer and lossy output doesn't clip.
+918 -g -3
