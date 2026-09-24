@@ -145,6 +145,13 @@ How a render works:
 `--mp2k-mix linear` is a middle option: the driver's own algorithm (linear
 interpolation at its mixing rate), minus the 8-bit truncation and wrap.
 
+`--mp2k-mix lerp` interpolates linearly from each source straight at the
+output rate, with no bandlimiting. It keeps everything the mixing rate would
+cut, and adds linear interpolation's images above each source's band. On WL4
+002 that is about 44 dB more energy in 10–16 kHz than sinc; that extra energy
+is interpolation images, not content from the samples. Some people hear that
+as sparkle.
+
 
 Results on Mother 3
 -------------------
@@ -235,7 +242,7 @@ and fade to 10 s.
 MP2K rendering (on by default when the driver is found):
 
         --no-hifi         output the driver's own mix instead of re-rendering its voices
-        --mp2k-mix MODE   sinc (default) or linear
+        --mp2k-mix MODE   sinc (default), linear or lerp
         --mp2k-bandwidth HZ   cap each voice's bandwidth; "driver" = the driver's Nyquist
         --mp2k-source-cutoff F  each voice's cutoff as a fraction of its playback rate (default 0.47)
         --mp2k-linear-samples LIST  render these samples (hex header addresses) like the
