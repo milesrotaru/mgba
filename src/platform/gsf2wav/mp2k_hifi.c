@@ -158,6 +158,12 @@ static bool _voiceStart(struct MP2KHiFi* hifi, struct MP2KHiFiVoice* v, const st
 		}
 	}
 	v->fixed = ch->type & MP2K_TYPE_FIX;
+	size_t w;
+	for (w = 0; w < hifi->linearWavCount; ++w) {
+		if (hifi->linearWavs[w] == wav) {
+			v->linear = true;
+		}
+	}
 	if ((wav >> 24) == 0x08 || (wav >> 24) == 0x09) {
 		size_t off = (wav & 0x01FFFFFF) + 0x10;
 		if (off + (size_t) v->size + 1 <= hifi->romSize) {
@@ -230,6 +236,14 @@ static void _renderVoice(struct MP2KHiFi* hifi, struct MP2KHiFiVoice* v, const s
 	}
 	double scale = 2 * cutoff;
 	double halfWidth = VOICE_ZERO_CROSSINGS / scale;
+	// For linear voices: the reconstruction lowpass at the mixing rate, in
+	// mixer samples, and never above the output's Nyquist
+	double mixCutoff = VOICE_SOURCE_CUTOFF;
+	if (VOICE_OUT_CUTOFF * ft->period / ft->cyclesPerOut < mixCutoff) {
+		mixCutoff = VOICE_OUT_CUTOFF * ft->period / ft->cyclesPerOut;
+	}
+	double mixScale = 2 * mixCutoff;
+	double mixHalfWidth = VOICE_ZERO_CROSSINGS / mixScale;
 	int64_t i;
 	for (i = ft->first; i < ft->end; ++i) {
 		double t = i * ft->cyclesPerOut;
@@ -260,6 +274,30 @@ static void _renderVoice(struct MP2KHiFi* hifi, struct MP2KHiFiVoice* v, const s
 			continue;
 		}
 		double tau = (t - ft->start) / ft->period;
+		if (v->linear) {
+			// As the driver does it: the source linearly interpolated at each
+			// mixer sample, then that stream reconstructed at the mixing rate
+			int64_t j0 = (int64_t) ceil(tau - mixHalfWidth);
+			int64_t j1 = (int64_t) floor(tau + mixHalfWidth);
+			double acc = 0;
+			int64_t j;
+			for (j = j0; j <= j1; ++j) {
+				double uj = v->u + j * v->step;
+				double fk = floor(uj);
+				int64_t k = (int64_t) fk;
+				double s0 = _sourceSample(hifi, v, k);
+				double sj = v->fixed ? s0 : s0 + (uj - fk) * (_sourceSample(hifi, v, k + 1) - s0);
+				acc += sj * _kernel(hifi, mixScale * (tau - j));
+			}
+			acc *= mixScale;
+			if (i < hifi->flushed || i >= hifi->flushed + (int64_t) hifi->ringMask) {
+				++hifi->lostSamples;
+				continue;
+			}
+			hifi->half[0][i & hifi->ringMask] += acc * g0;
+			hifi->half[1][i & hifi->ringMask] += acc * g1;
+			continue;
+		}
 		double u = v->u + tau * v->step;
 		int64_t k0 = (int64_t) ceil(u - halfWidth);
 		int64_t k1 = (int64_t) floor(u + halfWidth);

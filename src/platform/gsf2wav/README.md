@@ -215,6 +215,8 @@ MP2K rendering (on by default when the driver is found):
         --mp2k-mix MODE   sinc (default) or linear
         --mp2k-bandwidth HZ   cap each voice's bandwidth; "driver" = the driver's Nyquist
         --mp2k-source-cutoff F  each voice's cutoff as a fraction of its playback rate (default 0.47)
+        --mp2k-linear-samples LIST  render these samples (hex header addresses) like the
+                          driver, linear at its mixing rate; everything else stays sinc
         --ramp MS         volume change and note cut smoothing (default 2; 0 = the driver's steps)
 
 Other audio:
@@ -251,10 +253,14 @@ Status and known issues
 - **Some samples are gritty in sinc mode.** In Mother 3, track 006's organ
   (`082ED1BC`) is a jagged, pulse-like waveform played 3–5× above its recorded
   rate. Sinc reproduces its jumps faithfully, and the game's linear
-  interpolation smooths them over. By ear `--mp2k-mix linear` is best on it,
-  and neither bandwidth option fixes it. Simple statistics on the sample data
-  don't pick it out (see `tools/sample_noise.py`). A per-sample or per-pitch
-  switch to linear rendering is the likely fix; it isn't built yet.
+  interpolation smooths them over. The opposite is true for low-pitched voices:
+  006's intro chords (played as low as 0.33×) sound grainy in linear mode,
+  because linear interpolation leaves images of the stretched waveform, and
+  they're clean in sinc. Neither mode suits the whole song, so
+  `--mp2k-linear-samples 082ED1BC` renders just the organ linearly. The organ
+  is only used in 006. Simple statistics on the sample data don't pick out
+  samples like this (see `tools/sample_noise.py`), so overrides are chosen by
+  ear, with `--solo-sample` and `--sample-stats` to find the candidates.
 - **Tracks can clip.** Float output keeps overs (the unused Giygas battle track
   peaks at +2.2 dBFS). Use `-g` before encoding to integer formats or lossy
   codecs.

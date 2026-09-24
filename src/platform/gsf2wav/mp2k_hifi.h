@@ -37,6 +37,8 @@ struct MP2KHiFiVoice {
 	int64_t loopStart;
 	int64_t loopLength;
 	bool fixed;
+	// Render like the driver: linear interpolation at its mixing rate
+	bool linear;
 	int channel;
 
 	// Unwrapped position in source samples at the start of the current frame,
@@ -85,6 +87,9 @@ struct MP2KHiFi {
 	uint32_t mutedChannels;
 	// If nonzero, only voices playing this sample (its header address) sound
 	uint32_t soloWav;
+	// Samples (header addresses) to render like the driver in sinc mode
+	uint32_t linearWavs[64];
+	size_t linearWavCount;
 	// Upper limit on each voice's bandwidth in Hz (0: the output's Nyquist)
 	double bandwidth;
 	// Each voice's cutoff as a fraction of the rate its source is played at

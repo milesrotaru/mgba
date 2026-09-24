@@ -67,6 +67,8 @@ struct Options {
 	uint32_t soloWav;
 	bool sampleStats;
 	bool help;
+	uint32_t linearWavs[64];
+	size_t linearWavCount;
 };
 
 // Receives the raw DAC inputs from the core, bypassing the core's own
@@ -470,6 +472,8 @@ static void _usage(const char* arg0) {
 		"                        Keeps sample grit the game's mixing rate hid from coming through\n"
 		"      --mp2k-source-cutoff F  each voice's cutoff as a fraction of its own playback rate (default 0.47);\n"
 		"                        lower trims the top of every sample's band, at any pitch\n"
+		"      --mp2k-linear-samples LIST  render these samples (hex header addresses, comma-separated) the way\n"
+		"                        the driver does, linear at its mixing rate; the rest stay sinc\n"
 		"      --ramp MS         MP2K volume change and note cut smoothing, sinc mode (default %g ms; 0 = as the driver)\n"
 		"      --mute LIST       silence sources: psg, pcm (all DirectSound), or MP2K channel numbers 0-11\n"
 		"                        (channels need high-precision mixing), e.g. --mute psg,0,3\n"
@@ -496,6 +500,7 @@ static bool _parseArgs(int argc, char** argv, struct Options* opts) {
 		OPT_SOURCE_CUTOFF,
 		OPT_SOLO_SAMPLE,
 		OPT_SAMPLE_STATS,
+		OPT_LINEAR_SAMPLES,
 	};
 	static const struct option longOpts[] = {
 		{ "rate", required_argument, NULL, 'r' },
@@ -516,6 +521,7 @@ static bool _parseArgs(int argc, char** argv, struct Options* opts) {
 		{ "mp2k-source-cutoff", required_argument, NULL, OPT_SOURCE_CUTOFF },
 		{ "solo-sample", required_argument, NULL, OPT_SOLO_SAMPLE },
 		{ "sample-stats", no_argument, NULL, OPT_SAMPLE_STATS },
+		{ "mp2k-linear-samples", required_argument, NULL, OPT_LINEAR_SAMPLES },
 		{ "help", no_argument, NULL, 'h' },
 		{ 0 }
 	};
@@ -617,6 +623,22 @@ static bool _parseArgs(int argc, char** argv, struct Options* opts) {
 					free(list);
 					return false;
 				}
+			}
+			free(list);
+			break;
+		}
+		case OPT_LINEAR_SAMPLES: {
+			char* list = strdup(optarg);
+			char* tok;
+			for (tok = strtok(list, ","); tok; tok = strtok(NULL, ",")) {
+				char* end;
+				unsigned long addr = strtoul(tok, &end, 16);
+				if (!*tok || *end || opts->linearWavCount == 64) {
+					fprintf(stderr, "Bad --mp2k-linear-samples entry: %s\n", tok);
+					free(list);
+					return false;
+				}
+				opts->linearWavs[opts->linearWavCount++] = addr;
 			}
 			free(list);
 			break;
@@ -775,6 +797,8 @@ int main(int argc, char** argv) {
 			hifi.mutedChannels = opts.muteChannels;
 			hifi.bandwidth = opts.bandwidth;
 			hifi.soloWav = opts.soloWav;
+			memcpy(hifi.linearWavs, opts.linearWavs, sizeof(opts.linearWavs));
+			hifi.linearWavCount = opts.linearWavCount;
 			if (opts.sampleStats) {
 				hifi.collectStats = true;
 				hifi.stats = calloc(MP2K_HIFI_MAX_SAMPLE_STATS, sizeof(*hifi.stats));
