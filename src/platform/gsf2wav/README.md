@@ -152,6 +152,16 @@ cut, and adds linear interpolation's images above each source's band. On WL4
 is interpolation images, not content from the samples. Some people hear that
 as sparkle.
 
+`--mp2k-mix blam` is linear interpolation bandlimited to the output rate: each
+voice's kernel is the linear-interpolation triangle convolved with the output
+lowpass, evaluated exactly (the second difference of the lowpass's second
+integral, from a Hermite-interpolated table). At low playback rates it keeps
+linear's images above each source's band, which is where lerp's brightness
+comes from. At high rates the lowpass stops the aliasing lerp lets fold back.
+On WL4 002 it sits 4–13 dB under lerp from 6.7 to 22 kHz and has almost nothing
+above 22.5 kHz. The name comes from the band-limited-ramp option in some
+PSF-family resamplers. This is the same idea, written from scratch here.
+
 
 Results on Mother 3
 -------------------
@@ -242,7 +252,7 @@ and fade to 10 s.
 MP2K rendering (on by default when the driver is found):
 
         --no-hifi         output the driver's own mix instead of re-rendering its voices
-        --mp2k-mix MODE   sinc (default), linear or lerp
+        --mp2k-mix MODE   sinc (default), linear, lerp or blam
         --mp2k-bandwidth HZ   cap each voice's bandwidth; "driver" = the driver's Nyquist
         --mp2k-source-cutoff F  each voice's cutoff as a fraction of its playback rate (default 0.47)
         --mp2k-linear-samples LIST  render these samples (hex header addresses) like the

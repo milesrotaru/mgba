@@ -76,7 +76,29 @@ void MP2KHiFiInit(struct MP2KHiFi* hifi, struct BLMixer* out, struct MP2KMemory*
 		double window = r >= 1 ? 0 : _besselI0(VOICE_KAISER_BETA * sqrt(1 - r * r)) / i0beta;
 		hifi->table[i] = sinc * window;
 	}
-	size_t maxTaps = (size_t) ceil(VOICE_ZERO_CROSSINGS * VOICE_MAX_RATE / VOICE_OUT_CUTOFF) + 4;
+	// Integrals of the kernel for blam. S by Simpson's rule on the exact
+	// kernel, Q by the trapezoid rule corrected with S' = kernel, which is
+	// exact to fourth order. Both normalized so the full kernel integrates to 1.
+	hifi->blamS = malloc(entries * sizeof(double));
+	hifi->blamQ = malloc(entries * sizeof(double));
+	hifi->blamS[0] = 0;
+	hifi->blamQ[0] = 0;
+	double h = 1.0 / VOICE_TABLE_RES;
+	for (i = 1; i < entries; ++i) {
+		double u = (i - 0.5) * h;
+		double r = u / VOICE_ZERO_CROSSINGS;
+		double mid = sin(M_PI * u) / (M_PI * u) * (r >= 1 ? 0 : _besselI0(VOICE_KAISER_BETA * sqrt(1 - r * r)) / i0beta);
+		hifi->blamS[i] = hifi->blamS[i - 1] + h / 6 * (hifi->table[i - 1] + 4 * mid + hifi->table[i]);
+	}
+	double norm = 0.5 / hifi->blamS[(size_t) VOICE_ZERO_CROSSINGS * VOICE_TABLE_RES];
+	for (i = 0; i < entries; ++i) {
+		hifi->blamS[i] *= norm;
+	}
+	for (i = 1; i < entries; ++i) {
+		hifi->blamQ[i] = hifi->blamQ[i - 1] + h * 0.5 * (hifi->blamS[i - 1] + hifi->blamS[i])
+		               + h * h / 12 * norm * (hifi->table[i - 1] - hifi->table[i]);
+	}
+	size_t maxTaps = (size_t) ceil(VOICE_ZERO_CROSSINGS * VOICE_MAX_RATE / VOICE_OUT_CUTOFF) + 8;
 	hifi->taps = malloc(maxTaps * sizeof(double));
 	hifi->fifoCapacity = FIFO_HISTORY;
 	int f;
@@ -104,6 +126,8 @@ void MP2KHiFiInit(struct MP2KHiFi* hifi, struct BLMixer* out, struct MP2KMemory*
 void MP2KHiFiDeinit(struct MP2KHiFi* hifi) {
 	free(hifi->table);
 	free(hifi->taps);
+	free(hifi->blamQ);
+	free(hifi->blamS);
 	int f;
 	for (f = 0; f < 2; ++f) {
 		free(hifi->fifoHistory[f]);
@@ -127,6 +151,25 @@ static inline double _kernel(const struct MP2KHiFi* hifi, double u) {
 	}
 	double frac = u - i;
 	return hifi->table[i] + (hifi->table[i + 1] - hifi->table[i]) * frac;
+}
+
+// Q(y), the second integral of the unit kernel, by cubic Hermite
+// interpolation with its derivative S. Past the kernel's end it continues
+// as a straight line of slope 1/2.
+static inline double _blamQ(const struct MP2KHiFi* hifi, double y) {
+	y = fabs(y);
+	const size_t end = (size_t) VOICE_ZERO_CROSSINGS * VOICE_TABLE_RES;
+	double a = y * VOICE_TABLE_RES;
+	if (a >= end) {
+		return hifi->blamQ[end] + 0.5 * (y - VOICE_ZERO_CROSSINGS);
+	}
+	size_t i = (size_t) a;
+	double t = a - i;
+	double h = 1.0 / VOICE_TABLE_RES;
+	double t2 = t * t;
+	double t3 = t2 * t;
+	return (2 * t3 - 3 * t2 + 1) * hifi->blamQ[i] + (t3 - 2 * t2 + t) * h * hifi->blamS[i]
+	     + (-2 * t3 + 3 * t2) * hifi->blamQ[i + 1] + (t3 - t2) * h * hifi->blamS[i + 1];
 }
 
 // Sample k of the signal the voice plays: the data once, then the loop forever
@@ -240,6 +283,17 @@ static void _renderVoice(struct MP2KHiFi* hifi, struct MP2KHiFiVoice* v, const s
 	}
 	double scale = 2 * cutoff;
 	double halfWidth = VOICE_ZERO_CROSSINGS / scale;
+	// Blam: only the output's Nyquist (and --mp2k-bandwidth) limits the
+	// lowpass; the triangle does the rest
+	double blamCutoff = rate > 0 ? VOICE_OUT_CUTOFF / rate : VOICE_OUT_CUTOFF;
+	if (hifi->bandwidth > 0 && v->step > 0) {
+		double cap = hifi->bandwidth / (v->step * hifi->clockRate / ft->period);
+		if (cap < blamCutoff) {
+			blamCutoff = cap;
+		}
+	}
+	double blamScale = 2 * blamCutoff;
+	double blamHalfWidth = VOICE_ZERO_CROSSINGS / blamScale + 1;
 	// For linear voices: the reconstruction lowpass at the mixing rate, in
 	// mixer samples, and never above the output's Nyquist
 	double mixCutoff = VOICE_SOURCE_CUTOFF;
@@ -303,6 +357,34 @@ static void _renderVoice(struct MP2KHiFi* hifi, struct MP2KHiFiVoice* v, const s
 			continue;
 		}
 		double u = v->u + tau * v->step;
+		if (hifi->mode == MP2K_HIFI_BLAM && !v->linear) {
+			// The kernel is the linear-interpolation triangle convolved with
+			// the lowpass: with R'' = lowpass, it is R(x+1) - 2R(x) + R(x-1),
+			// and R(x) = Q(c x) / c plus terms that cancel in the difference
+			int64_t k0 = (int64_t) ceil(u - blamHalfWidth);
+			int64_t k1 = (int64_t) floor(u + blamHalfWidth);
+			double* q = hifi->taps;
+			int n = (int) (k1 - k0) + 3;
+			int j;
+			for (j = 0; j < n; ++j) {
+				q[j] = _blamQ(hifi, blamScale * (u - (k0 - 1 + j)));
+			}
+			double acc = 0;
+			for (j = 1; j < n - 1; ++j) {
+				int s = _sourceSample(hifi, v, k0 - 1 + j);
+				if (s) {
+					acc += s * (q[j - 1] - 2 * q[j] + q[j + 1]);
+				}
+			}
+			acc /= blamScale;
+			if (i < hifi->flushed || i >= hifi->flushed + (int64_t) hifi->ringMask) {
+				++hifi->lostSamples;
+				continue;
+			}
+			hifi->half[0][i & hifi->ringMask] += acc * g0;
+			hifi->half[1][i & hifi->ringMask] += acc * g1;
+			continue;
+		}
 		if (hifi->mode == MP2K_HIFI_LERP && !v->linear) {
 			double fk = floor(u);
 			int64_t k = (int64_t) fk;

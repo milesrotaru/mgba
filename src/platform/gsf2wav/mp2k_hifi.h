@@ -85,6 +85,10 @@ enum MP2KHiFiMode {
 	// bandlimiting, so pitched-up samples alias and images leak above the
 	// source band, but nothing is lost to the driver's mixing rate
 	MP2K_HIFI_LERP,
+	// Linear interpolation, then lowpassed at the output rate: the triangle
+	// kernel convolved with the output's sinc. Keeps linear's images above
+	// each source's band at low rates, and stops aliasing at high ones
+	MP2K_HIFI_BLAM,
 };
 
 struct MP2KHiFi {
@@ -111,6 +115,10 @@ struct MP2KHiFi {
 	int tableRes;
 	double* table;
 	double* taps;
+	// Blam: Q(y), the second integral of the kernel from 0 (even), and its
+	// derivative, the first integral (odd), for y in [0, zeroCrossings]
+	double* blamQ;
+	double* blamS;
 
 	struct MP2KHiFiVoice voices[MP2K_MAX_CHANNELS];
 	struct MP2KHiFiVoice ghosts[MP2K_HIFI_MAX_GHOSTS];
