@@ -303,6 +303,19 @@ static void _renderVoice(struct MP2KHiFi* hifi, struct MP2KHiFiVoice* v, const s
 			continue;
 		}
 		double u = v->u + tau * v->step;
+		if (hifi->mode == MP2K_HIFI_LERP && !v->linear) {
+			double fk = floor(u);
+			int64_t k = (int64_t) fk;
+			double s0 = _sourceSample(hifi, v, k);
+			double s = v->fixed ? s0 : s0 + (u - fk) * (_sourceSample(hifi, v, k + 1) - s0);
+			if (i < hifi->flushed || i >= hifi->flushed + (int64_t) hifi->ringMask) {
+				++hifi->lostSamples;
+				continue;
+			}
+			hifi->half[0][i & hifi->ringMask] += s * g0;
+			hifi->half[1][i & hifi->ringMask] += s * g1;
+			continue;
+		}
 		int64_t k0 = (int64_t) ceil(u - halfWidth);
 		int64_t k1 = (int64_t) floor(u + halfWidth);
 		double acc = 0;

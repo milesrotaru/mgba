@@ -468,6 +468,7 @@ static void _usage(const char* arg0) {
 		"      --no-hifi         for MP2K games, output the driver's own mix instead of re-rendering its voices\n"
 		"      --mp2k-mix MODE   sinc: resample each voice from its source to the output rate (default)\n"
 		"                        linear: the driver's own resampling at its mixing rate, without its 8-bit loss\n"
+		"                        lerp: linear interpolation from each source straight at the output rate\n"
 		"      --mp2k-bandwidth HZ limit each voice's bandwidth (sinc mode); \"driver\" = the driver's Nyquist.\n"
 		"                        Keeps sample grit the game's mixing rate hid from coming through\n"
 		"      --mp2k-source-cutoff F  each voice's cutoff as a fraction of its own playback rate (default 0.47);\n"
@@ -600,6 +601,8 @@ static bool _parseArgs(int argc, char** argv, struct Options* opts) {
 				opts->hifiMode = MP2K_HIFI_SINC;
 			} else if (strcmp(optarg, "linear") == 0) {
 				opts->hifiMode = MP2K_HIFI_LINEAR;
+			} else if (strcmp(optarg, "lerp") == 0) {
+				opts->hifiMode = MP2K_HIFI_LERP;
 			} else {
 				fprintf(stderr, "Unknown MP2K mix mode: %s\n", optarg);
 				return false;
