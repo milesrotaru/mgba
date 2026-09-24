@@ -280,6 +280,40 @@ Status and known issues
   driver's first audible frame in the FIFO stream. It gives up after about
   15 s and falls back to the captured stream.
 
+### Not started: live playback in the libretro core
+
+The same rendering could run during gameplay in RetroArch's mGBA core. This
+is an assessment, not a plan anyone has started on:
+
+- **Integration point.** `retro_run` in `src/platform/libretro/libretro.c`
+  calls `core->runFrame()`, then drains the core's `mAudioBuffer` into
+  `audioCallback`. A hi-fi path would install the audio observer and the MP2K
+  code hook when the game loads, and read the band-limited mixer instead. It
+  would also report 48 kHz in `retro_get_system_av_info` in place of the
+  core's own rate.
+- **Latency is small.** The driver mixes each frame about one frame before
+  the hardware plays it, so the re-render isn't behind real time. The added
+  delay is the renderer's look-ahead: about 30 ms with the current kernels,
+  mostly `blmix.c`'s 900 Hz minimum source cutoff and 48 zero crossings. A
+  shorter kernel could bring it under 10 ms.
+- **Cost** is roughly 40M multiply-adds per second for 12 voices at 48 kHz.
+  That's fine on a desktop; low-end hardware would want a shorter kernel.
+- **What needs building:**
+  1. Play the core's normal audio until the lock lands, then crossfade,
+     instead of holding output back.
+  2. Verify the exact mix against the FIFO every frame (the `--mp2k-verify`
+     machinery), and on a mismatch fall back and re-lock. This covers loading
+     screens, frames that skip `SoundMain`, soft resets and driver
+     reinitialization.
+  3. Reset and re-lock on savestate loads; the renderer's state isn't
+     serialized. Rewind needs either real serialization or a short crossfade
+     per step.
+  4. Turn it off while fast-forwarding.
+  5. Core options: enable, mix mode, per-sample overrides.
+- **Estimate:** a prototype (Mother 3, no savestate support) in a few days;
+  robust enough to leave on in two to three weeks, mostly testing gameplay
+  edge cases. Play-testing needs RetroArch on a real machine.
+
 
 Working on this (people and agents)
 -----------------------------------
