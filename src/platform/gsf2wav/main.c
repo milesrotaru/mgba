@@ -67,6 +67,7 @@ struct Options {
 	double sourceCutoff;
 	uint32_t soloWav;
 	bool sampleStats;
+	bool noFillHoles;
 	bool help;
 	uint32_t linearWavs[64];
 	size_t linearWavCount;
@@ -558,6 +559,8 @@ static void _usage(const char* arg0) {
 		"                        (channels need high-precision mixing), e.g. --mute psg,0,3\n"
 		"      --solo-sample ADDR  only MP2K voices playing the sample at hex ADDR (implies muting PSG)\n"
 		"      --sample-stats    print which MP2K samples played: notes, seconds, mean/max playback rate, max gain\n"
+		"      --no-fill-holes   read samples as the rip has them; by default zero bytes (bytes the ripper never saw\n"
+		"                        read, zeroed in the rip) are filled from their neighbours before resampling\n"
 		"      --mp2k-verify     check the MP2K (or AlphaDream) mixer port against the game's own mixer\n"
 		"\n"
 		"TIME is seconds or [h:]m:ss[.fff]. Without tags, length defaults to %g s and fade to %g s.\n",
@@ -579,6 +582,7 @@ static bool _parseArgs(int argc, char** argv, struct Options* opts) {
 		OPT_SOURCE_CUTOFF,
 		OPT_SOLO_SAMPLE,
 		OPT_SAMPLE_STATS,
+		OPT_NO_FILL_HOLES,
 		OPT_LINEAR_SAMPLES,
 	};
 	static const struct option longOpts[] = {
@@ -600,6 +604,7 @@ static bool _parseArgs(int argc, char** argv, struct Options* opts) {
 		{ "mp2k-source-cutoff", required_argument, NULL, OPT_SOURCE_CUTOFF },
 		{ "solo-sample", required_argument, NULL, OPT_SOLO_SAMPLE },
 		{ "sample-stats", no_argument, NULL, OPT_SAMPLE_STATS },
+		{ "no-fill-holes", no_argument, NULL, OPT_NO_FILL_HOLES },
 		{ "mp2k-linear-samples", required_argument, NULL, OPT_LINEAR_SAMPLES },
 		{ "help", no_argument, NULL, 'h' },
 		{ 0 }
@@ -726,6 +731,9 @@ static bool _parseArgs(int argc, char** argv, struct Options* opts) {
 			free(list);
 			break;
 		}
+		case OPT_NO_FILL_HOLES:
+			opts->noFillHoles = true;
+			break;
 		case OPT_SAMPLE_STATS:
 			opts->sampleStats = true;
 			break;
@@ -888,6 +896,7 @@ int main(int argc, char** argv) {
 		hifi.soloWav = opts.soloWav;
 		memcpy(hifi.linearWavs, opts.linearWavs, sizeof(opts.linearWavs));
 		hifi.linearWavCount = opts.linearWavCount;
+		hifi.fillHoles = !opts.noFillHoles;
 		if (opts.sampleStats) {
 			hifi.collectStats = true;
 			hifi.stats = calloc(MP2K_HIFI_MAX_SAMPLE_STATS, sizeof(*hifi.stats));
@@ -1029,6 +1038,10 @@ int main(int argc, char** argv) {
 			fprintf(stderr, "%s high-precision: locked to %.2f Hz FIFO clock, FIFO A/B carry halves %d/%d, %llu resyncs, %llu samples lost, %llu voice fade-outs dropped\n",
 			        hifi.driver->name, GBA_ARM7TDMI_FREQUENCY / hifi.latchPeriod, hifi.halfForFifo[0], hifi.halfForFifo[1],
 			        (unsigned long long) hifi.resyncs, (unsigned long long) hifi.lostSamples, (unsigned long long) hifi.droppedGhosts);
+			if (hifi.holesFilled) {
+				fprintf(stderr, "%s high-precision: filled %llu zeroed sample bytes (rip holes) in %zu samples\n", hifi.driver->name,
+				        (unsigned long long) hifi.holesFilled, hifi.repairCount);
+			}
 		} else if (!hifi.failed) {
 			fprintf(stderr, "%s high-precision: the driver never produced PCM output (PSG-only track?); nothing to re-render\n", hifi.driver->name);
 		}

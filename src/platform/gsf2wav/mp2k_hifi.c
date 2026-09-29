@@ -32,6 +32,9 @@
 #define RING_SECONDS 20.0
 #define LINEAR_HISTORY_FRAMES 16
 
+// Distinct samples whose holes are repaired and kept
+#define MAX_REPAIRS 1024
+
 #define FIFO_HISTORY 16384
 #define LOCK_PATTERN 64
 // A window needs this many sample-to-sample changes to be worth searching for
@@ -112,6 +115,8 @@ void MP2KHiFiInit(struct MP2KHiFi* hifi, const struct HiFiDriver* driver, struct
 	hifi->pendingExact = malloc(MP2K_HIFI_MAX_PENDING * sizeof(*hifi->pendingExact));
 	hifi->horizon = INFINITY;
 	hifi->sourceCutoff = VOICE_SOURCE_CUTOFF;
+	hifi->fillHoles = true;
+	hifi->repairs = calloc(MAX_REPAIRS, sizeof(*hifi->repairs));
 	size_t ringSize = 1;
 	while (ringSize < (size_t) (out->outRate * RING_SECONDS)) {
 		ringSize <<= 1;
@@ -137,6 +142,11 @@ void MP2KHiFiDeinit(struct MP2KHiFi* hifi) {
 	}
 	free(hifi->pending);
 	free(hifi->pendingFrames);
+	size_t r;
+	for (r = 0; r < hifi->repairCount; ++r) {
+		free(hifi->repairs[r].data);
+	}
+	free(hifi->repairs);
 	free(hifi->pendingExact);
 	free(hifi->half[0]);
 	free(hifi->half[1]);
@@ -176,7 +186,7 @@ static inline double _blamQ(const struct MP2KHiFi* hifi, double y) {
 }
 
 // Sample k of the signal the voice plays: the data once, then the loop forever
-static inline int _sourceSample(const struct MP2KHiFi* hifi, const struct MP2KHiFiVoice* v, int64_t k) {
+static inline double _sourceSample(const struct MP2KHiFi* hifi, const struct MP2KHiFiVoice* v, int64_t k) {
 	if (k < 0) {
 		return 0;
 	}
@@ -186,6 +196,9 @@ static inline int _sourceSample(const struct MP2KHiFi* hifi, const struct MP2KHi
 		}
 		k = v->loopStart + (k - v->size) % v->loopLength;
 	}
+	if (v->repaired) {
+		return v->repaired[k];
+	}
 	if (v->unsignedData) {
 		return (v->data ? (uint8_t) v->data[k] : hifi->mem->read8(hifi->mem, v->dataAddress + (uint32_t) k)) - 0x80;
 	}
@@ -193,6 +206,55 @@ static inline int _sourceSample(const struct MP2KHiFi* hifi, const struct MP2KHi
 		return v->data[k];
 	}
 	return (int8_t) hifi->mem->read8(hifi->mem, v->dataAddress + (uint32_t) k);
+}
+
+// The sample's values with runs of zero bytes (the rip's holes) replaced by
+// linear interpolation between the known samples on either side. Includes
+// the byte after the end, which the driver's interpolation can read.
+static const double* _repaired(struct MP2KHiFi* hifi, const struct MP2KHiFiVoice* v) {
+	size_t r;
+	for (r = 0; r < hifi->repairCount; ++r) {
+		if (hifi->repairs[r].address == v->dataAddress && hifi->repairs[r].size == v->size) {
+			return hifi->repairs[r].data;
+		}
+	}
+	if (hifi->repairCount == MAX_REPAIRS) {
+		return NULL;
+	}
+	int64_t n = v->size + 1;
+	double* out = malloc(n * sizeof(double));
+	const uint8_t* raw = (const uint8_t*) v->data;
+	int64_t last = -1; // last known sample
+	int64_t k;
+	for (k = 0; k <= n; ++k) {
+		bool known = k < n && raw[k] != 0;
+		if (k < n) {
+			out[k] = v->unsignedData ? raw[k] - 0x80 : (int8_t) raw[k];
+		}
+		if (!known && k < n) {
+			continue;
+		}
+		// Fill the hole between last and k
+		if (k - last > 1) {
+			double a = last >= 0 ? out[last] : (k < n ? out[k] : 0);
+			double b = k < n ? out[k] : a;
+			if (last < 0 && k == n) {
+				a = b = 0;
+			}
+			int64_t j;
+			for (j = last + 1; j < k; ++j) {
+				double t = (double) (j - last) / (k - last);
+				out[j] = a + (b - a) * t;
+			}
+			hifi->holesFilled += k - last - 1;
+		}
+		last = k;
+	}
+	hifi->repairs[hifi->repairCount].address = v->dataAddress;
+	hifi->repairs[hifi->repairCount].size = v->size;
+	hifi->repairs[hifi->repairCount].data = out;
+	++hifi->repairCount;
+	return out;
 }
 
 static bool _voiceStart(struct MP2KHiFi* hifi, struct MP2KHiFiVoice* v, const struct HiFiVoiceIn* in) {
@@ -217,6 +279,9 @@ static bool _voiceStart(struct MP2KHiFi* hifi, struct MP2KHiFiVoice* v, const st
 		if (off + (size_t) v->size + 1 <= hifi->romSize) {
 			v->data = (const int8_t*) &hifi->rom[off];
 		}
+	}
+	if (v->data && v->size > 0 && hifi->fillHoles) {
+		v->repaired = _repaired(hifi, v);
 	}
 	return v->size > 0;
 }
@@ -364,7 +429,7 @@ static void _renderVoice(struct MP2KHiFi* hifi, struct MP2KHiFiVoice* v, const s
 			}
 			double acc = 0;
 			for (j = 1; j < n - 1; ++j) {
-				int s = _sourceSample(hifi, v, k0 - 1 + j);
+				double s = _sourceSample(hifi, v, k0 - 1 + j);
 				if (s) {
 					acc += s * (q[j - 1] - 2 * q[j] + q[j + 1]);
 				}
@@ -395,7 +460,12 @@ static void _renderVoice(struct MP2KHiFi* hifi, struct MP2KHiFiVoice* v, const s
 		int64_t k1 = (int64_t) floor(u + halfWidth);
 		double acc = 0;
 		int64_t k;
-		if (v->data && k0 >= 0 && k1 < v->size && !v->unsignedData) {
+		if (v->repaired && k0 >= 0 && k1 < v->size) {
+			const double* d = v->repaired;
+			for (k = k0; k <= k1; ++k) {
+				acc += d[k] * _kernel(hifi, scale * (u - k));
+			}
+		} else if (v->data && k0 >= 0 && k1 < v->size && !v->unsignedData) {
 			const int8_t* d = v->data;
 			for (k = k0; k <= k1; ++k) {
 				acc += d[k] * _kernel(hifi, scale * (u - k));
@@ -407,7 +477,7 @@ static void _renderVoice(struct MP2KHiFi* hifi, struct MP2KHiFiVoice* v, const s
 			}
 		} else {
 			for (k = k0; k <= k1; ++k) {
-				int s = _sourceSample(hifi, v, k);
+				double s = _sourceSample(hifi, v, k);
 				if (s) {
 					acc += s * _kernel(hifi, scale * (u - k));
 				}

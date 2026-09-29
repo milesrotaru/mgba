@@ -81,6 +81,7 @@ struct MP2KHiFiVoice {
 	uint32_t wav;
 	uint32_t dataAddress;
 	const int8_t* data; // in the ROM image, if it's there
+	const double* repaired; // with the rip's holes filled (see fillHoles)
 	int64_t size;
 	int64_t loopStart;
 	int64_t loopLength;
@@ -149,6 +150,20 @@ struct MP2KHiFi {
 	// Samples (header addresses) to render like the driver in sinc mode
 	uint32_t linearWavs[64];
 	size_t linearWavCount;
+	// GSF rippers zero every ROM byte the game didn't read while being ripped.
+	// A sample played above its recorded rate is only read every few bytes, so
+	// the rip keeps those and zeroes the rest, and a renderer that reads every
+	// byte (sinc and its relatives) hears the holes as grit or, for unsigned
+	// samples, full-scale spikes. With this set, zero bytes in a sample are
+	// treated as missing and filled by interpolating their neighbours.
+	bool fillHoles;
+	struct MP2KHiFiRepaired {
+		uint32_t address;
+		int64_t size;
+		double* data;
+	}* repairs;
+	size_t repairCount;
+	uint64_t holesFilled;
 	// Upper limit on each voice's bandwidth in Hz (0: the output's Nyquist)
 	double bandwidth;
 	// Each voice's cutoff as a fraction of the rate its source is played at
