@@ -376,7 +376,12 @@ Status and known issues
   holes where they're played, in 9 tracks (006, 020, 071, 101, 113, 152, 179,
   203, 244). Filling gets most within −24 to −38 dB of the real data; one
   sample in 203, played at up to 16×, is too sparse to fill (−3.6 dB) and
-  needs the ROM. This, not the waveform, was 006's organ grit.
+  needs the ROM. This, not the waveform, was 006's organ grit. Superstar
+  Saga has 12 of 59 samples with holes, in 16 tracks (its unsigned samples
+  turn a zeroed byte into a full-scale negative spike, so the damage sounds
+  like distortion, not grit); Wario Land 4 has 3 of 337, in 6 track numbers
+  (006, 011, 020, 033, 084, 095; 006 is three files, 006a–c).
+  `tools/rom_holes.py` does this survey for any set given its ROM.
 
 ### Not started: live playback in the libretro core
 
