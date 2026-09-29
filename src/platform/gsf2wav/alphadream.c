@@ -5,6 +5,8 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 #include "alphadream.h"
 
+#include "mp2k_hifi.h"
+
 #include <string.h>
 
 // The mix routine's prologue and first few instructions, around the literal
@@ -278,3 +280,84 @@ void ADMixFloat(struct ADFrame* frame, struct MP2KMemory* mem, uint32_t mutedCha
 		ch->pos = pos;
 	}
 }
+
+// The high-precision renderer's backend
+
+static void _hifiInfo(const void* frameIn, struct HiFiFrameInfo* info) {
+	const struct ADFrame* frame = frameIn;
+	info->samplesPerVBlank = frame->count;
+	info->pcmFreq = frame->pcmFreq;
+	info->reverb = 0;
+	info->pcmDmaPeriod = 0;
+}
+
+static bool _hifiAnyActive(const void* frameIn) {
+	const struct ADFrame* frame = frameIn;
+	int c;
+	for (c = 0; c < AD_CHANNELS; ++c) {
+		if (frame->chans[c].state) {
+			return true;
+		}
+	}
+	return false;
+}
+
+static void _hifiVoices(const void* frameIn, struct MP2KMemory* mem, struct HiFiVoiceIn* out) {
+	const struct ADFrame* frame = frameIn;
+	int c;
+	for (c = 0; c < AD_CHANNELS; ++c) {
+		struct HiFiVoiceIn* v = &out[c];
+		struct ADChannel ch = frame->chans[c];
+		memset(v, 0, sizeof(*v));
+		v->started = ch.state == 0x80;
+		v->on = ADChannelEnvelope(&ch);
+		if (!v->on) {
+			continue;
+		}
+		uint32_t header = ADSampleHeader(frame->driver, mem, &ch);
+		v->wav = header;
+		v->data = header + 0x10;
+		v->size = mem->read32(mem, header + 12);
+		if (mem->read8(mem, header + 3) & 0x40) {
+			v->loopStart = mem->read32(mem, header + 8);
+			v->loopLength = v->size - v->loopStart;
+			if (v->loopLength <= 0 || v->loopStart < 0) {
+				v->loopLength = 0;
+			}
+		}
+		v->driverHold = true;
+		v->unsignedData = true;
+		// A channel whose sample already ended can be put back into release
+		// without being restarted; the driver mixes nothing from it
+		if (!v->loopLength && ch.pos >= (uint32_t) v->size << 10) {
+			v->on = false;
+			continue;
+		}
+		v->pos = ch.pos / 1024.0;
+		v->step = ADChannelStep(frame->driver, mem, &ch, header) / 1024.0;
+		// Unrounded: the driver truncates volume * level to 8 bits
+		v->gain[0] = ch.volLeft * ch.level / 65536.0;
+		v->gain[1] = ch.volRight * ch.level / 65536.0;
+	}
+}
+
+static void _hifiMixExact(const void* frame, struct MP2KMemory* mem, int8_t* half0, int8_t* half1) {
+	struct ADFrame copy = *(const struct ADFrame*) frame;
+	ADMixExact(&copy, mem, half0, half1);
+}
+
+static void _hifiMixFloat(const void* frame, struct MP2KMemory* mem, uint32_t mutedChannels, uint32_t soloWav,
+                          double* half0, double* half1) {
+	struct ADFrame copy = *(const struct ADFrame*) frame;
+	ADMixFloat(&copy, mem, mutedChannels, soloWav, half0, half1);
+}
+
+const struct HiFiDriver ADHiFiDriver = {
+	.name = "AlphaDream",
+	.frameSize = sizeof(struct ADFrame),
+	.info = _hifiInfo,
+	.anyActive = _hifiAnyActive,
+	.voices = _hifiVoices,
+	.mixExact = _hifiMixExact,
+	.mixFloat = _hifiMixFloat,
+};

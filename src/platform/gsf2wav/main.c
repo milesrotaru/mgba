@@ -163,6 +163,9 @@ struct ADHook {
 	struct MemoryView mem;
 	struct ADDriver driver;
 	bool verify;
+	struct MP2KHiFi* hifi;
+	struct GBAAudio* audio;
+	bool bandwidthDriver;
 	bool pending;
 	struct ADFrame frame;
 	int8_t outA[AD_MAX_SAMPLES_PER_FRAME];
@@ -206,10 +209,22 @@ static void _adHit(struct GBACodeHook* hook, struct GBA* gba) {
 		return;
 	}
 	ADFrameRead(&v->frame, &v->driver, &v->mem.d, count, cpu->gprs[2], cpu->gprs[3]);
+	// The driver doesn't keep its own rate; FIFO A's timer has it
+	uint16_t reload = gba->timers[v->audio->chATimer].reload;
+	v->frame.pcmFreq = reload ? (int32_t) lround(GBA_ARM7TDMI_FREQUENCY / (double) (0x10000 - reload)) : 0;
 	if (!v->printedInfo) {
 		v->printedInfo = true;
-		fprintf(stderr, "AlphaDream: channels %08X, samples %08X, %d samples/frame\n", v->driver.channels,
-		        v->driver.sampleTable, count);
+		fprintf(stderr, "AlphaDream: channels %08X, samples %08X, %d Hz, %d samples/frame\n", v->driver.channels,
+		        v->driver.sampleTable, v->frame.pcmFreq, count);
+	}
+	if (v->hifi) {
+		if (v->bandwidthDriver && v->frame.pcmFreq > 0) {
+			v->hifi->bandwidth = v->frame.pcmFreq * 0.5;
+		}
+		double gains[2][2];
+		_fifoGains(v->audio, 0, &gains[0][0], &gains[0][1]);
+		_fifoGains(v->audio, 1, &gains[1][0], &gains[1][1]);
+		MP2KHiFiFrame(v->hifi, mTimingGlobalTime(&gba->timing), &v->frame, gains);
 	}
 	if (v->verify) {
 		struct ADFrame copy = v->frame;
@@ -852,41 +867,47 @@ int main(int argc, char** argv) {
 		.audio = &gba->audio,
 	};
 	struct MP2KHiFi hifi;
+	struct MP2KHiFi* activeHifi = NULL;
 	uint32_t hookAddress = multiboot ? 0 : MP2KFindHook(image.data, image.size);
 	struct ADHook ad = {
 		.mem = { .d = { .read8 = _view8, .read32 = _view32 }, .cpu = gba->cpu },
 		.verify = opts.mp2kVerify,
+		.audio = &gba->audio,
 	};
 	bool haveAD = !hookAddress && !multiboot && ADFind(image.data, image.size, &ad.driver);
 	if (opts.mp2kVerify && !hookAddress && !haveAD) {
 		fprintf(stderr, "No MP2K or AlphaDream driver found\n");
 		return 1;
 	}
-	if (haveAD && opts.mp2kVerify) {
+	const struct HiFiDriver* hifiDriver = hookAddress ? &MP2KHiFiDriver : haveAD ? &ADHiFiDriver : NULL;
+	if (opts.hifi && hifiDriver) {
+		MP2KHiFiInit(&hifi, hifiDriver, &mixer, &mp2k.mem.d, image.data, image.size, GBA_ARM7TDMI_FREQUENCY, opts.rampMs / 1000.0);
+		hifi.mode = opts.hifiMode;
+		hifi.mutedChannels = opts.muteChannels;
+		hifi.bandwidth = opts.bandwidth;
+		hifi.soloWav = opts.soloWav;
+		memcpy(hifi.linearWavs, opts.linearWavs, sizeof(opts.linearWavs));
+		hifi.linearWavCount = opts.linearWavCount;
+		if (opts.sampleStats) {
+			hifi.collectStats = true;
+			hifi.stats = calloc(MP2K_HIFI_MAX_SAMPLE_STATS, sizeof(*hifi.stats));
+		}
+		if (opts.sourceCutoff > 0) {
+			hifi.sourceCutoff = opts.sourceCutoff;
+		}
+		activeHifi = &hifi;
+	}
+	if (haveAD && (opts.mp2kVerify || activeHifi)) {
 		fprintf(stderr, "AlphaDream driver found; hooking its mix routine at %08X\n", ad.driver.mix);
+		ad.hifi = activeHifi;
+		ad.bandwidthDriver = opts.bandwidthDriver;
 		ad.d.hit = _adHit;
 		GBAInstallCodeHook(gba, &ad.d, ad.driver.mix, MODE_THUMB);
 	}
-	if (hookAddress && (opts.mp2kVerify || opts.hifi)) {
+	if (hookAddress && (opts.mp2kVerify || activeHifi)) {
 		fprintf(stderr, "MP2K driver found; hooking SoundMainRAM entry at %08X\n", hookAddress);
-		if (opts.hifi) {
-			MP2KHiFiInit(&hifi, &mixer, &mp2k.mem.d, image.data, image.size, GBA_ARM7TDMI_FREQUENCY, opts.rampMs / 1000.0);
-			hifi.mode = opts.hifiMode;
-			hifi.mutedChannels = opts.muteChannels;
-			hifi.bandwidth = opts.bandwidth;
-			hifi.soloWav = opts.soloWav;
-			memcpy(hifi.linearWavs, opts.linearWavs, sizeof(opts.linearWavs));
-			hifi.linearWavCount = opts.linearWavCount;
-			if (opts.sampleStats) {
-				hifi.collectStats = true;
-				hifi.stats = calloc(MP2K_HIFI_MAX_SAMPLE_STATS, sizeof(*hifi.stats));
-			}
-			if (opts.sourceCutoff > 0) {
-				hifi.sourceCutoff = opts.sourceCutoff;
-			}
-			mp2k.bandwidthDriver = opts.bandwidthDriver;
-			mp2k.hifi = &hifi;
-		}
+		mp2k.hifi = activeHifi;
+		mp2k.bandwidthDriver = opts.bandwidthDriver;
 		mp2k.d.hit = _mp2kHit;
 		GBAInstallCodeHook(gba, &mp2k.d, hookAddress, MODE_THUMB);
 	}
@@ -899,7 +920,7 @@ int main(int argc, char** argv) {
 		.psgGrid = opts.psgGrid,
 		.mutePsg = opts.mutePsg,
 		.muteFifo = opts.muteFifo,
-		.hifi = mp2k.hifi,
+		.hifi = activeHifi,
 	};
 	capture.psgLast = mTimingGlobalTime(&gba->timing);
 	gba->audio.observer = &capture.d;
@@ -932,8 +953,8 @@ int main(int argc, char** argv) {
 		_captureSync(&capture.d, &gba->audio, mTimingCurrentTime(&gba->timing));
 		size_t n;
 		double limit = (double) mTimingGlobalTime(&gba->timing);
-		if (mp2k.hifi && MP2KHiFiHorizon(mp2k.hifi) < limit) {
-			limit = MP2KHiFiHorizon(mp2k.hifi);
+		if (activeHifi && MP2KHiFiHorizon(activeHifi) < limit) {
+			limit = MP2KHiFiHorizon(activeHifi);
 		}
 		while ((n = BLMixerRead(&mixer, limit, buf, bufFrames)) > 0) {
 			if (n > total - produced) {
@@ -1003,13 +1024,13 @@ int main(int argc, char** argv) {
 		fprintf(stderr, "MP2K verify: %llu frames, %llu differing (%llu of %llu samples)\n", (unsigned long long) mp2k.frames,
 		        (unsigned long long) mp2k.badFrames, (unsigned long long) mp2k.badSamples, (unsigned long long) mp2k.samples);
 	}
-	if (mp2k.hifi) {
+	if (activeHifi) {
 		if (hifi.locked) {
-			fprintf(stderr, "MP2K high-precision: locked to %.2f Hz FIFO clock, FIFO A/B carry halves %d/%d, %llu resyncs, %llu samples lost, %llu voice fade-outs dropped\n",
-			        GBA_ARM7TDMI_FREQUENCY / hifi.latchPeriod, hifi.halfForFifo[0], hifi.halfForFifo[1],
+			fprintf(stderr, "%s high-precision: locked to %.2f Hz FIFO clock, FIFO A/B carry halves %d/%d, %llu resyncs, %llu samples lost, %llu voice fade-outs dropped\n",
+			        hifi.driver->name, GBA_ARM7TDMI_FREQUENCY / hifi.latchPeriod, hifi.halfForFifo[0], hifi.halfForFifo[1],
 			        (unsigned long long) hifi.resyncs, (unsigned long long) hifi.lostSamples, (unsigned long long) hifi.droppedGhosts);
 		} else if (!hifi.failed) {
-			fprintf(stderr, "MP2K high-precision: the driver never produced PCM output (PSG-only track?); nothing to re-render\n");
+			fprintf(stderr, "%s high-precision: the driver never produced PCM output (PSG-only track?); nothing to re-render\n", hifi.driver->name);
 		}
 		size_t i;
 		for (i = 0; i < hifi.statsCount; ++i) {

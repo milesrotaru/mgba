@@ -54,9 +54,10 @@ static double _besselI0(double x) {
 	return sum;
 }
 
-void MP2KHiFiInit(struct MP2KHiFi* hifi, struct BLMixer* out, struct MP2KMemory* mem, const uint8_t* rom, size_t romSize,
-                  double clockRate, double rampSeconds) {
+void MP2KHiFiInit(struct MP2KHiFi* hifi, const struct HiFiDriver* driver, struct BLMixer* out, struct MP2KMemory* mem,
+                  const uint8_t* rom, size_t romSize, double clockRate, double rampSeconds) {
 	memset(hifi, 0, sizeof(*hifi));
+	hifi->driver = driver;
 	hifi->out = out;
 	hifi->mem = mem;
 	hifi->rom = rom;
@@ -107,6 +108,7 @@ void MP2KHiFiInit(struct MP2KHiFi* hifi, struct BLMixer* out, struct MP2KMemory*
 		hifi->fifoTimes[f] = malloc(FIFO_HISTORY * sizeof(uint64_t));
 	}
 	hifi->pending = malloc(MP2K_HIFI_MAX_PENDING * sizeof(*hifi->pending));
+	hifi->pendingFrames = malloc(MP2K_HIFI_MAX_PENDING * driver->frameSize);
 	hifi->pendingExact = malloc(MP2K_HIFI_MAX_PENDING * sizeof(*hifi->pendingExact));
 	hifi->horizon = INFINITY;
 	hifi->sourceCutoff = VOICE_SOURCE_CUTOFF;
@@ -134,6 +136,7 @@ void MP2KHiFiDeinit(struct MP2KHiFi* hifi) {
 		free(hifi->fifoTimes[f]);
 	}
 	free(hifi->pending);
+	free(hifi->pendingFrames);
 	free(hifi->pendingExact);
 	free(hifi->half[0]);
 	free(hifi->half[1]);
@@ -183,49 +186,39 @@ static inline int _sourceSample(const struct MP2KHiFi* hifi, const struct MP2KHi
 		}
 		k = v->loopStart + (k - v->size) % v->loopLength;
 	}
+	if (v->unsignedData) {
+		return (v->data ? (uint8_t) v->data[k] : hifi->mem->read8(hifi->mem, v->dataAddress + (uint32_t) k)) - 0x80;
+	}
 	if (v->data) {
 		return v->data[k];
 	}
-	return (int8_t) hifi->mem->read8(hifi->mem, v->wav + 0x10 + (uint32_t) k);
+	return (int8_t) hifi->mem->read8(hifi->mem, v->dataAddress + (uint32_t) k);
 }
 
-static bool _voiceStart(struct MP2KHiFi* hifi, struct MP2KHiFiVoice* v, const struct MP2KChannel* ch) {
-	struct MP2KMemory* mem = hifi->mem;
-	uint32_t wav = ch->wav;
+static bool _voiceStart(struct MP2KHiFi* hifi, struct MP2KHiFiVoice* v, const struct HiFiVoiceIn* in) {
 	memset(v, 0, sizeof(*v));
 	v->active = true;
-	v->wav = wav;
-	v->size = mem->read32(mem, wav + 0xC);
-	if (ch->status & MP2K_SF_LOOP) {
-		int64_t loopOffset = mem->read32(mem, wav + 0x8);
-		v->loopStart = loopOffset;
-		v->loopLength = v->size - loopOffset;
-		if (v->loopLength <= 0 || loopOffset < 0) {
-			v->loopLength = 0;
-		}
-	}
-	v->fixed = ch->type & MP2K_TYPE_FIX;
+	v->wav = in->wav;
+	v->dataAddress = in->data;
+	v->size = in->size;
+	v->loopStart = in->loopStart;
+	v->loopLength = in->loopLength;
+	v->fixed = in->fixed;
+	v->driverHold = in->driverHold;
+	v->unsignedData = in->unsignedData;
 	size_t w;
 	for (w = 0; w < hifi->linearWavCount; ++w) {
-		if (hifi->linearWavs[w] == wav) {
+		if (hifi->linearWavs[w] == in->wav) {
 			v->linear = true;
 		}
 	}
-	if ((wav >> 24) == 0x08 || (wav >> 24) == 0x09) {
-		size_t off = (wav & 0x01FFFFFF) + 0x10;
+	if ((in->data >> 24) == 0x08 || (in->data >> 24) == 0x09) {
+		size_t off = in->data & 0x01FFFFFF;
 		if (off + (size_t) v->size + 1 <= hifi->romSize) {
 			v->data = (const int8_t*) &hifi->rom[off];
 		}
 	}
 	return v->size > 0;
-}
-
-static double _channelPosition(const struct MP2KChannel* ch) {
-	double pos = (double) (ch->currentPointer - (ch->wav + 0x10));
-	if (!(ch->type & MP2K_TYPE_FIX)) {
-		pos += ch->fw / 8388608.0;
-	}
-	return pos;
 }
 
 static double _wrap(const struct MP2KHiFiVoice* v, double u) {
@@ -344,7 +337,7 @@ static void _renderVoice(struct MP2KHiFi* hifi, struct MP2KHiFiVoice* v, const s
 				double fk = floor(uj);
 				int64_t k = (int64_t) fk;
 				double s0 = _sourceSample(hifi, v, k);
-				double sj = v->fixed ? s0 : s0 + (uj - fk) * (_sourceSample(hifi, v, k + 1) - s0);
+				double sj = v->driverHold ? s0 : s0 + (uj - fk) * (_sourceSample(hifi, v, k + 1) - s0);
 				acc += sj * _kernel(hifi, mixScale * (tau - j));
 			}
 			acc *= mixScale;
@@ -402,10 +395,15 @@ static void _renderVoice(struct MP2KHiFi* hifi, struct MP2KHiFiVoice* v, const s
 		int64_t k1 = (int64_t) floor(u + halfWidth);
 		double acc = 0;
 		int64_t k;
-		if (v->data && k0 >= 0 && k1 < v->size) {
+		if (v->data && k0 >= 0 && k1 < v->size && !v->unsignedData) {
 			const int8_t* d = v->data;
 			for (k = k0; k <= k1; ++k) {
 				acc += d[k] * _kernel(hifi, scale * (u - k));
+			}
+		} else if (v->data && k0 >= 0 && k1 < v->size) {
+			const uint8_t* d = (const uint8_t*) v->data;
+			for (k = k0; k <= k1; ++k) {
+				acc += (d[k] - 0x80) * _kernel(hifi, scale * (u - k));
 			}
 		} else {
 			for (k = k0; k <= k1; ++k) {
@@ -492,24 +490,18 @@ static void _recordStats(struct MP2KHiFi* hifi, uint32_t wav, bool started, doub
 	}
 }
 
-static void _renderFrameLinear(struct MP2KHiFi* hifi, uint64_t n, const struct MP2KFrame* frameIn, const double route[2][2]) {
-	struct MP2KFrame frame = *frameIn;
-	int32_t spv = frame.samplesPerVBlank;
-	int c;
-	for (c = 0; c < MP2K_MAX_CHANNELS; ++c) {
-		if ((hifi->mutedChannels & (1u << c)) || (hifi->soloWav && frame.chans[c].wav != hifi->soloWav)) {
-			frame.chans[c].status = 0;
-		}
-	}
-	double half0[MP2K_MAX_SAMPLES_PER_VBLANK];
-	double half1[MP2K_MAX_SAMPLES_PER_VBLANK];
-	MP2KMixFloat(&frame, hifi->mem, half0, half1);
+static void _renderFrameLinear(struct MP2KHiFi* hifi, uint64_t n, const void* frame, const struct HiFiFrameInfo* info,
+                               const double route[2][2]) {
+	int32_t spv = info->samplesPerVBlank;
+	double half0[HIFI_MAX_SAMPLES_PER_FRAME];
+	double half1[HIFI_MAX_SAMPLES_PER_FRAME];
+	hifi->driver->mixFloat(frame, hifi->mem, hifi->mutedChannels, hifi->soloWav, half0, half1);
 	double* mono = &hifi->linearHistory[(n % LINEAR_HISTORY_FRAMES) * MP2K_MAX_SAMPLES_PER_VBLANK];
-	int period = frame.pcmDmaPeriod;
-	bool reverb = frame.reverb && period > 1 && period < LINEAR_HISTORY_FRAMES && n >= (uint64_t) period;
+	int period = info->pcmDmaPeriod;
+	bool reverb = info->reverb && period > 1 && period < LINEAR_HISTORY_FRAMES && n >= (uint64_t) period;
 	const double* old0 = reverb ? &hifi->linearHistory[((n - period) % LINEAR_HISTORY_FRAMES) * MP2K_MAX_SAMPLES_PER_VBLANK] : NULL;
 	const double* old1 = reverb ? &hifi->linearHistory[((n - period + 1) % LINEAR_HISTORY_FRAMES) * MP2K_MAX_SAMPLES_PER_VBLANK] : NULL;
-	double g = frame.reverb / 512.0;
+	double g = info->reverb / 512.0;
 	double latch = hifi->latchPeriod;
 	double start = hifi->t0 + (double) n * spv * latch + latch * 0.5;
 	int32_t j;
@@ -527,9 +519,12 @@ static void _renderFrameLinear(struct MP2KHiFi* hifi, uint64_t n, const struct M
 	hifi->horizon = start + spv * latch - latch * 0.5;
 }
 
-static void _renderFrame(struct MP2KHiFi* hifi, uint64_t n, const struct MP2KFrame* frameIn, const double fifoGain[2][2]) {
-	struct MP2KFrame frame = *frameIn;
-	int32_t spv = frame.samplesPerVBlank;
+static void _renderFrame(struct MP2KHiFi* hifi, uint64_t n, const void* frame, const double fifoGain[2][2]) {
+	struct HiFiFrameInfo info;
+	hifi->driver->info(frame, &info);
+	int32_t spv = info.samplesPerVBlank;
+	// Drivers that don't say: the rate the lock measured
+	double pcmFreq = info.pcmFreq > 0 ? info.pcmFreq : hifi->clockRate / hifi->latchPeriod;
 	struct FrameTiming ft;
 	ft.period = hifi->latchPeriod;
 	ft.cyclesPerOut = hifi->out->cyclesPerSample;
@@ -548,7 +543,7 @@ static void _renderFrame(struct MP2KHiFi* hifi, uint64_t n, const struct MP2KFra
 		}
 	}
 	if (hifi->mode == MP2K_HIFI_LINEAR) {
-		_renderFrameLinear(hifi, n, frameIn, route);
+		_renderFrameLinear(hifi, n, frame, &info, route);
 		return;
 	}
 	memcpy(hifi->route, route, sizeof(route));
@@ -556,38 +551,32 @@ static void _renderFrame(struct MP2KHiFi* hifi, uint64_t n, const struct MP2KFra
 		hifi->flushed = (int64_t) floor((ft.start - ft.period * 0.5 - VOICE_PREROLL_SECONDS * hifi->clockRate) / ft.cyclesPerOut);
 	}
 	double framePeriodOut = spv * ft.period / ft.cyclesPerOut;
-	hifi->reverbDelay[0] = frame.pcmDmaPeriod * framePeriodOut;
-	hifi->reverbDelay[1] = (frame.pcmDmaPeriod - 1) * framePeriodOut;
-	if (frame.reverb && frame.pcmDmaPeriod > 1) {
+	hifi->reverbDelay[0] = info.pcmDmaPeriod * framePeriodOut;
+	hifi->reverbDelay[1] = (info.pcmDmaPeriod - 1) * framePeriodOut;
+	if (info.reverb && info.pcmDmaPeriod > 1) {
 		int64_t i;
 		for (i = ft.first < hifi->flushed ? hifi->flushed : ft.first; i < ft.end; ++i) {
-			hifi->reverbGain[i & hifi->ringMask] = frame.reverb / 512.0;
+			hifi->reverbGain[i & hifi->ringMask] = info.reverb / 512.0;
 		}
 	}
 
+	struct HiFiVoiceIn in[HIFI_MAX_VOICES];
+	memset(in, 0, sizeof(in));
+	hifi->driver->voices(frame, hifi->mem, in);
 	int c;
-	for (c = 0; c < MP2K_MAX_CHANNELS; ++c) {
+	for (c = 0; c < HIFI_MAX_VOICES; ++c) {
 		struct MP2KHiFiVoice* v = &hifi->voices[c];
-		if (c >= frame.maxChans) {
+		const struct HiFiVoiceIn* ch = &in[c];
+		if (!ch->on) {
 			if (v->active) {
 				_ghost(hifi, v, ft.start - ft.period * 0.5);
 				v->active = false;
 			}
 			continue;
 		}
-		struct MP2KChannel* ch = &frame.chans[c];
-		bool started = ch->status & MP2K_SF_START;
-		bool on = MP2KChannelEnvelope(&frame, ch, hifi->mem);
-		if (!on) {
-			if (v->active) {
-				_ghost(hifi, v, ft.start - ft.period * 0.5);
-				v->active = false;
-			}
-			continue;
-		}
-		double e = (frame.masterVolume + 1) * ch->envelopeVolume / 16.0;
-		double gain[2] = { ch->rightVolume * e / 65536.0, ch->leftVolume * e / 65536.0 };
-		double pos = _channelPosition(ch);
+		bool started = ch->started;
+		const double* gain = ch->gain;
+		double pos = ch->pos;
 		if (started || !v->active || v->wav != ch->wav) {
 			if (v->active) {
 				_ghost(hifi, v, ft.start - ft.period * 0.5);
@@ -602,7 +591,7 @@ static void _renderFrame(struct MP2KHiFi* hifi, uint64_t n, const struct MP2KFra
 			v->prevGain[1] = gain[1];
 			v->gain[0] = gain[0];
 			v->gain[1] = gain[1];
-			v->step = v->fixed ? 1.0 : (uint32_t) (ch->frequency * frame.divFreq) / 8388608.0;
+			v->step = ch->step;
 			struct FrameTiming pre = ft;
 			pre.end = ft.first;
 			pre.first = (int64_t) ceil((ft.start - ft.period * 0.5 - VOICE_PREROLL_SECONDS * hifi->clockRate) / ft.cyclesPerOut);
@@ -617,9 +606,9 @@ static void _renderFrame(struct MP2KHiFi* hifi, uint64_t n, const struct MP2KFra
 		}
 		v->gain[0] = gain[0];
 		v->gain[1] = gain[1];
-		v->step = v->fixed ? 1.0 : (uint32_t) (ch->frequency * frame.divFreq) / 8388608.0;
+		v->step = ch->step;
 		if (hifi->collectStats) {
-			_recordStats(hifi, v->wav, started, v->step * frame.pcmFreq, (double) spv / frame.pcmFreq,
+			_recordStats(hifi, v->wav, started, v->step * pcmFreq, (double) spv / pcmFreq,
 			             gain[0] > gain[1] ? gain[0] : gain[1]);
 		}
 		_renderVoice(hifi, v, &ft, false);
@@ -763,14 +752,16 @@ void MP2KHiFiFifo(struct MP2KHiFi* hifi, int fifo, uint64_t when, int8_t sample)
 	++hifi->fifoCount[fifo];
 }
 
-void MP2KHiFiFrame(struct MP2KHiFi* hifi, uint64_t hookTime, const struct MP2KFrame* frame, const double fifoGain[2][2]) {
-	if (hifi->failed || frame->samplesPerVBlank <= 0 || frame->samplesPerVBlank > MP2K_MAX_SAMPLES_PER_VBLANK) {
+void MP2KHiFiFrame(struct MP2KHiFi* hifi, uint64_t hookTime, const void* frame, const double fifoGain[2][2]) {
+	struct HiFiFrameInfo info;
+	hifi->driver->info(frame, &info);
+	if (hifi->failed || info.samplesPerVBlank <= 0 || info.samplesPerVBlank > HIFI_MAX_SAMPLES_PER_FRAME) {
 		return;
 	}
 	if (hifi->locked) {
-		if (frame->samplesPerVBlank != hifi->samplesPerVBlank) {
+		if (info.samplesPerVBlank != hifi->samplesPerVBlank) {
 			// The driver was reconfigured; timing no longer holds
-			fprintf(stderr, "MP2K: mixing rate changed mid-song; high-precision mixing stopped\n");
+			fprintf(stderr, "%s: mixing rate changed mid-song; high-precision mixing stopped\n", hifi->driver->name);
 			hifi->failed = true;
 			hifi->horizon = INFINITY;
 			return;
@@ -780,19 +771,14 @@ void MP2KHiFiFrame(struct MP2KHiFi* hifi, uint64_t hookTime, const struct MP2KFr
 	}
 
 	// Not locked yet: keep the frame, and its exact mix to find it in the FIFO
-	if (hifi->pendingCount && frame->samplesPerVBlank != hifi->samplesPerVBlank) {
+	if (hifi->pendingCount && info.samplesPerVBlank != hifi->samplesPerVBlank) {
 		hifi->frameIndex += hifi->pendingCount;
 		hifi->pendingCount = 0;
 	}
-	hifi->samplesPerVBlank = frame->samplesPerVBlank;
+	hifi->samplesPerVBlank = info.samplesPerVBlank;
 	if (!hifi->pendingCount) {
 		// Leading frames with no voice at all render nothing; just count them
-		bool active = false;
-		int c;
-		for (c = 0; c < frame->maxChans; ++c) {
-			active = active || (frame->chans[c].status & MP2K_SF_ON);
-		}
-		if (!active) {
+		if (!hifi->driver->anyActive(frame)) {
 			++hifi->frameIndex;
 			hifi->horizon = INFINITY;
 			return;
@@ -805,14 +791,13 @@ void MP2KHiFiFrame(struct MP2KHiFi* hifi, uint64_t hookTime, const struct MP2KFr
 	}
 	struct MP2KHiFiPending* pend = &hifi->pending[hifi->pendingCount];
 	pend->hookTime = hookTime;
-	pend->frame = *frame;
+	memcpy(&hifi->pendingFrames[hifi->pendingCount * hifi->driver->frameSize], frame, hifi->driver->frameSize);
 	memcpy(pend->fifoGain, fifoGain, sizeof(pend->fifoGain));
-	struct MP2KFrame copy = *frame;
-	int8_t half0[MP2K_MAX_SAMPLES_PER_VBLANK];
-	int8_t half1[MP2K_MAX_SAMPLES_PER_VBLANK];
-	MP2KMixExact(&copy, hifi->mem, half0, half1);
-	_pickWindow(&hifi->pendingExact[hifi->pendingCount][0], half0, frame->samplesPerVBlank);
-	_pickWindow(&hifi->pendingExact[hifi->pendingCount][1], half1, frame->samplesPerVBlank);
+	int8_t half0[HIFI_MAX_SAMPLES_PER_FRAME];
+	int8_t half1[HIFI_MAX_SAMPLES_PER_FRAME];
+	hifi->driver->mixExact(frame, hifi->mem, half0, half1);
+	_pickWindow(&hifi->pendingExact[hifi->pendingCount][0], half0, info.samplesPerVBlank);
+	_pickWindow(&hifi->pendingExact[hifi->pendingCount][1], half1, info.samplesPerVBlank);
 	++hifi->pendingCount;
 	// A frame plays after its hook, so nothing from the first pending frame on
 	// may be finalized until it's rendered
@@ -822,11 +807,11 @@ void MP2KHiFiFrame(struct MP2KHiFi* hifi, uint64_t hookTime, const struct MP2KFr
 	if (hifi->locked) {
 		size_t p;
 		for (p = 0; p < hifi->pendingCount; ++p) {
-			_renderFrame(hifi, hifi->frameIndex++, &hifi->pending[p].frame, hifi->pending[p].fifoGain);
+			_renderFrame(hifi, hifi->frameIndex++, &hifi->pendingFrames[p * hifi->driver->frameSize], hifi->pending[p].fifoGain);
 		}
 		hifi->pendingCount = 0;
 	} else if (hifi->pendingCount > LOCK_GIVE_UP) {
-		fprintf(stderr, "MP2K: couldn't find the driver's output in the FIFO stream; high-precision mixing disabled\n");
+		fprintf(stderr, "%s: couldn't find the driver's output in the FIFO stream; high-precision mixing disabled\n", hifi->driver->name);
 		hifi->failed = true;
 		hifi->horizon = INFINITY;
 	}
@@ -835,3 +820,95 @@ void MP2KHiFiFrame(struct MP2KHiFi* hifi, uint64_t hookTime, const struct MP2KFr
 double MP2KHiFiHorizon(const struct MP2KHiFi* hifi) {
 	return hifi->horizon;
 }
+
+// The MP2K backend
+
+static double _channelPosition(const struct MP2KChannel* ch) {
+	double pos = (double) (ch->currentPointer - (ch->wav + 0x10));
+	if (!(ch->type & MP2K_TYPE_FIX)) {
+		pos += ch->fw / 8388608.0;
+	}
+	return pos;
+}
+
+static void _mp2kInfo(const void* frameIn, struct HiFiFrameInfo* info) {
+	const struct MP2KFrame* frame = frameIn;
+	info->samplesPerVBlank = frame->samplesPerVBlank;
+	info->pcmFreq = frame->pcmFreq;
+	info->reverb = frame->reverb;
+	info->pcmDmaPeriod = frame->pcmDmaPeriod;
+}
+
+static bool _mp2kAnyActive(const void* frameIn) {
+	const struct MP2KFrame* frame = frameIn;
+	int c;
+	for (c = 0; c < frame->maxChans; ++c) {
+		if (frame->chans[c].status & MP2K_SF_ON) {
+			return true;
+		}
+	}
+	return false;
+}
+
+static void _mp2kVoices(const void* frameIn, struct MP2KMemory* mem, struct HiFiVoiceIn* out) {
+	struct MP2KFrame frame = *(const struct MP2KFrame*) frameIn;
+	int c;
+	for (c = 0; c < MP2K_MAX_CHANNELS; ++c) {
+		struct HiFiVoiceIn* v = &out[c];
+		memset(v, 0, sizeof(*v));
+		if (c >= frame.maxChans) {
+			continue;
+		}
+		struct MP2KChannel* ch = &frame.chans[c];
+		v->started = ch->status & MP2K_SF_START;
+		v->on = MP2KChannelEnvelope(&frame, ch, mem);
+		if (!v->on) {
+			continue;
+		}
+		double e = (frame.masterVolume + 1) * ch->envelopeVolume / 16.0;
+		v->gain[0] = ch->rightVolume * e / 65536.0;
+		v->gain[1] = ch->leftVolume * e / 65536.0;
+		v->pos = _channelPosition(ch);
+		v->wav = ch->wav;
+		v->data = ch->wav + 0x10;
+		v->size = mem->read32(mem, ch->wav + 0xC);
+		if (ch->status & MP2K_SF_LOOP) {
+			int64_t loopOffset = mem->read32(mem, ch->wav + 0x8);
+			v->loopStart = loopOffset;
+			v->loopLength = v->size - loopOffset;
+			if (v->loopLength <= 0 || loopOffset < 0) {
+				v->loopLength = 0;
+			}
+		}
+		v->fixed = ch->type & MP2K_TYPE_FIX;
+		v->driverHold = v->fixed;
+		v->step = v->fixed ? 1.0 : (uint32_t) (ch->frequency * frame.divFreq) / 8388608.0;
+	}
+}
+
+static void _mp2kMixExact(const void* frame, struct MP2KMemory* mem, int8_t* half0, int8_t* half1) {
+	struct MP2KFrame copy = *(const struct MP2KFrame*) frame;
+	MP2KMixExact(&copy, mem, half0, half1);
+}
+
+static void _mp2kMixFloat(const void* frameIn, struct MP2KMemory* mem, uint32_t mutedChannels, uint32_t soloWav,
+                          double* half0, double* half1) {
+	struct MP2KFrame frame = *(const struct MP2KFrame*) frameIn;
+	int c;
+	for (c = 0; c < MP2K_MAX_CHANNELS; ++c) {
+		if ((mutedChannels & (1u << c)) || (soloWav && frame.chans[c].wav != soloWav)) {
+			frame.chans[c].status = 0;
+		}
+	}
+	MP2KMixFloat(&frame, mem, half0, half1);
+}
+
+const struct HiFiDriver MP2KHiFiDriver = {
+	.name = "MP2K",
+	.frameSize = sizeof(struct MP2KFrame),
+	.info = _mp2kInfo,
+	.anyActive = _mp2kAnyActive,
+	.voices = _mp2kVoices,
+	.mixExact = _mp2kMixExact,
+	.mixFloat = _mp2kMixFloat,
+};

@@ -58,6 +58,7 @@ struct ADChannel {
 
 struct ADFrame {
 	const struct ADDriver* driver;
+	int32_t pcmFreq; // from the FIFO timer, if known
 	uint32_t outA;
 	uint32_t outB;
 	int32_t count;
@@ -90,5 +91,9 @@ void ADMixExact(struct ADFrame* frame, struct MP2KMemory* mem, int8_t* outA, int
 // Channels in mutedChannels, or not playing soloWav if it's set, are skipped.
 void ADMixFloat(struct ADFrame* frame, struct MP2KMemory* mem, uint32_t mutedChannels, uint32_t soloWav, double* outA,
                 double* outB);
+
+// For the high-precision renderer: half 0 is FIFO A's buffer, half 1 FIFO B's
+struct HiFiDriver;
+extern const struct HiFiDriver ADHiFiDriver;
 
 #endif
