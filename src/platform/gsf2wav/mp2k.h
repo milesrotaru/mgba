@@ -10,10 +10,11 @@
 #include <stddef.h>
 #include <stdint.h>
 
-// Nintendo's MP2K ("m4a", "Sappy") sound driver: structure layouts and a
-// literal C port of its PCM mixer, SoundMainRAM. Offsets are from the SDK 3.0
-// revision of the driver (as used by Mother 3); see pret's m4a_1.s for a
-// commented, later revision.
+// Nintendo's MP2K ("m4a", "Sappy") sound driver: structure layouts and a C
+// reimplementation of its PCM mixer, SoundMainRAM, written while reading
+// disassembly of Mother 3 (the SDK 3.0 revision) and pret's decompilation of a
+// later revision. It is not clean-room; see the README's Credits. Checked
+// against the games with --mp2k-verify, not proven.
 
 #define MP2K_ID_NUMBER 0x68736D53
 #define MP2K_SOUND_INFO_PTR 0x03007FF0
