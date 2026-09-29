@@ -13,6 +13,7 @@
 #include <mgba/internal/gba/memory.h>
 #include <mgba-util/vfs.h>
 
+#include "alphadream.h"
 #include "blmix.h"
 #include "mp2k.h"
 #include "mp2k_hifi.h"
@@ -155,6 +156,67 @@ static void _mp2kVerifyCheck(struct MP2KHook* v) {
 }
 
 static void _fifoGains(struct GBAAudio* audio, int fifo, double* left, double* right);
+
+// The same for AlphaDream's driver
+struct ADHook {
+	struct GBACodeHook d;
+	struct MemoryView mem;
+	struct ADDriver driver;
+	bool verify;
+	bool pending;
+	struct ADFrame frame;
+	int8_t outA[AD_MAX_SAMPLES_PER_FRAME];
+	int8_t outB[AD_MAX_SAMPLES_PER_FRAME];
+	uint64_t frames;
+	uint64_t badFrames;
+	uint64_t badSamples;
+	uint64_t samples;
+	bool printedInfo;
+};
+
+static void _adVerifyCheck(struct ADHook* v) {
+	if (!v->pending) {
+		return;
+	}
+	v->pending = false;
+	int32_t j;
+	uint64_t bad = 0;
+	for (j = 0; j < v->frame.count; ++j) {
+		bad += ((int8_t) GBAView8(v->mem.cpu, v->frame.outA + j) != v->outA[j]) +
+		       ((int8_t) GBAView8(v->mem.cpu, v->frame.outB + j) != v->outB[j]);
+	}
+	++v->frames;
+	v->samples += v->frame.count * 2;
+	if (bad) {
+		if (v->badFrames < 5) {
+			fprintf(stderr, "AlphaDream verify: frame %llu differs in %llu of %d samples\n", (unsigned long long) v->frames,
+			        (unsigned long long) bad, v->frame.count * 2);
+		}
+		++v->badFrames;
+		v->badSamples += bad;
+	}
+}
+
+static void _adHit(struct GBACodeHook* hook, struct GBA* gba) {
+	struct ADHook* v = (struct ADHook*) hook;
+	_adVerifyCheck(v);
+	struct ARMCore* cpu = gba->cpu;
+	int32_t count = cpu->gprs[1];
+	if (count <= 0 || count > AD_MAX_SAMPLES_PER_FRAME || (count & 3)) {
+		return;
+	}
+	ADFrameRead(&v->frame, &v->driver, &v->mem.d, count, cpu->gprs[2], cpu->gprs[3]);
+	if (!v->printedInfo) {
+		v->printedInfo = true;
+		fprintf(stderr, "AlphaDream: channels %08X, samples %08X, %d samples/frame\n", v->driver.channels,
+		        v->driver.sampleTable, count);
+	}
+	if (v->verify) {
+		struct ADFrame copy = v->frame;
+		ADMixExact(&copy, &v->mem.d, v->outA, v->outB);
+		v->pending = true;
+	}
+}
 
 static void _mp2kHit(struct GBACodeHook* hook, struct GBA* gba) {
 	struct MP2KHook* v = (struct MP2KHook*) hook;
@@ -481,7 +543,7 @@ static void _usage(const char* arg0) {
 		"                        (channels need high-precision mixing), e.g. --mute psg,0,3\n"
 		"      --solo-sample ADDR  only MP2K voices playing the sample at hex ADDR (implies muting PSG)\n"
 		"      --sample-stats    print which MP2K samples played: notes, seconds, mean/max playback rate, max gain\n"
-		"      --mp2k-verify     check the MP2K mixer port against the game's own mixer\n"
+		"      --mp2k-verify     check the MP2K (or AlphaDream) mixer port against the game's own mixer\n"
 		"\n"
 		"TIME is seconds or [h:]m:ss[.fff]. Without tags, length defaults to %g s and fade to %g s.\n",
 		arg0, DEFAULT_RATE, DEFAULT_PSG_GRID, DEFAULT_RAMP_MS, DEFAULT_LENGTH, DEFAULT_FADE);
@@ -791,9 +853,19 @@ int main(int argc, char** argv) {
 	};
 	struct MP2KHiFi hifi;
 	uint32_t hookAddress = multiboot ? 0 : MP2KFindHook(image.data, image.size);
-	if (opts.mp2kVerify && !hookAddress) {
-		fprintf(stderr, "No MP2K driver found\n");
+	struct ADHook ad = {
+		.mem = { .d = { .read8 = _view8, .read32 = _view32 }, .cpu = gba->cpu },
+		.verify = opts.mp2kVerify,
+	};
+	bool haveAD = !hookAddress && !multiboot && ADFind(image.data, image.size, &ad.driver);
+	if (opts.mp2kVerify && !hookAddress && !haveAD) {
+		fprintf(stderr, "No MP2K or AlphaDream driver found\n");
 		return 1;
+	}
+	if (haveAD && opts.mp2kVerify) {
+		fprintf(stderr, "AlphaDream driver found; hooking its mix routine at %08X\n", ad.driver.mix);
+		ad.d.hit = _adHit;
+		GBAInstallCodeHook(gba, &ad.d, ad.driver.mix, MODE_THUMB);
 	}
 	if (hookAddress && (opts.mp2kVerify || opts.hifi)) {
 		fprintf(stderr, "MP2K driver found; hooking SoundMainRAM entry at %08X\n", hookAddress);
@@ -924,7 +996,10 @@ int main(int argc, char** argv) {
 		fprintf(stderr, "Warning: %llu events arrived after their output was finalized\n", (unsigned long long) mixer.lateEvents);
 	}
 
-	if (opts.mp2kVerify) {
+	if (opts.mp2kVerify && haveAD) {
+		fprintf(stderr, "AlphaDream verify: %llu frames, %llu differing (%llu of %llu samples)\n", (unsigned long long) ad.frames,
+		        (unsigned long long) ad.badFrames, (unsigned long long) ad.badSamples, (unsigned long long) ad.samples);
+	} else if (opts.mp2kVerify) {
 		fprintf(stderr, "MP2K verify: %llu frames, %llu differing (%llu of %llu samples)\n", (unsigned long long) mp2k.frames,
 		        (unsigned long long) mp2k.badFrames, (unsigned long long) mp2k.badSamples, (unsigned long long) mp2k.samples);
 	}
