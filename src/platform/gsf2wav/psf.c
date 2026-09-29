@@ -232,9 +232,13 @@ static bool _uploadSection(struct GSFImage* image, const uint8_t* data, size_t s
 	uint32_t entry = _le32(&data[0]);
 	uint32_t offset = _le32(&data[4]);
 	uint32_t romSize = _le32(&data[8]);
+	// Some rips' size field counts the 12-byte header too. Players load what
+	// is there (lazygsf reads past its buffer), so do the same and leave the
+	// missing tail zeroed.
+	size_t available = romSize;
 	if (romSize > size - 12) {
-		_error(err, errLen, "%s: program section claims %u bytes but only has %zu", path, romSize, size - 12);
-		return false;
+		fprintf(stderr, "%s: program section claims %u bytes but only has %zu; loading what is there\n", path, romSize, size - 12);
+		available = size - 12;
 	}
 	if (!image->haveEntry) {
 		image->entry = entry;
@@ -257,7 +261,8 @@ static bool _uploadSection(struct GSFImage* image, const uint8_t* data, size_t s
 		memset(&image->data[image->size], 0, rounded - image->size);
 		image->size = rounded;
 	}
-	memcpy(&image->data[start], &data[12], romSize);
+	memcpy(&image->data[start], &data[12], available);
+	memset(&image->data[start + available], 0, romSize - available);
 	return true;
 }
 

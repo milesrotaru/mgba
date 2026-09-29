@@ -39,7 +39,8 @@ def load(path, image=None, top=True):
         off = offset & 0x1FFFFFF
         if len(image['data']) < off + size:
             image['data'].extend(b'\0' * (off + size - len(image['data'])))
-        image['data'][off:off + size] = prog[12:12 + size]
+        # Some rips' size field counts the header; zero-fill the missing tail
+        image['data'][off:off + size] = prog[12:12 + size].ljust(size, b'\0')
     n = 2
     while f'_lib{n}' in tags:
         load(_open(dir, tags[f'_lib{n}']), image, False)
