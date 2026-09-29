@@ -4,7 +4,8 @@
 #   render_set.py GSF2WAV SET_DIR OUT_DIR [--bitrate KBPS] [--zip NAME.zip]
 #                 [--overrides FILE] [-- gsf2wav args]
 # An overrides file lists per-track gsf2wav options: each line is a track
-# filename prefix (up to its first space), then options; # starts a comment.
+# filename prefix (up to its first space) or its full name without extension,
+# quoted if it has spaces, then options; # starts a comment.
 import argparse, concurrent.futures, glob, os, re, shlex, struct, subprocess, sys, zipfile
 import gsfpy
 
@@ -32,8 +33,8 @@ def main():
         for line in open(a.overrides):
             line = line.split('#', 1)[0].strip()
             if line:
-                key, _, opts = line.partition(' ')
-                overrides[key] = shlex.split(opts)
+                key, *opts = shlex.split(line)
+                overrides[key] = opts
     os.makedirs(a.out_dir, exist_ok=True)
     files = sorted(glob.glob(os.path.join(a.set_dir, '*.minigsf')) + glob.glob(os.path.join(a.set_dir, '*.gsf')))
 
@@ -41,7 +42,7 @@ def main():
         base = os.path.splitext(os.path.basename(f))[0]
         wav = os.path.join(a.out_dir, base + '.wav')
         out = os.path.join(a.out_dir, base + '.opus')
-        track_opts = overrides.get(base.split(' ', 1)[0], [])
+        track_opts = overrides.get(base, overrides.get(base.split(' ', 1)[0], []))
         r = subprocess.run([a.exe] + extra + track_opts + [f, wav], capture_output=True, text=True)
         if r.returncode:
             return base, False, r.stderr.strip().splitlines()[-1:]

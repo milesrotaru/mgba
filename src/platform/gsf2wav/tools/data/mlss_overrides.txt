@@ -1,0 +1,24 @@
+# Per-track gsf2wav options for Mario & Luigi: Superstar Saga (2003-11-17 rip),
+# applied by render_set.py ... --overrides tools/data/mlss_overrides.txt
+# Format: track filename prefix (up to the first space), or the full name
+# quoted, then gsf2wav options.
+#
+# Not MP2K (AlphaDream's own driver), so these render through the plain
+# DirectSound path. The driver mixes hot: these tracks' decoded Opus peaks
+# were above -1 dBFS (up to +0.75); bring each to about -1.2 dBFS.
+42 -g -1.9
+20 -g -1.3
+35 -g -1.3
+40 -g -1.2
+24 -g -1.1
+39 -g -1.1
+13 -g -1.0
+15 -g -1.0
+38 -g -0.8
+09 -g -0.8
+11 -g -0.7
+14 -g -0.6
+"99 Unknown Song 3" -g -0.5
+36 -g -0.5
+16 -g -0.4
+01 -g -0.4

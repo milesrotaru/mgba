@@ -226,6 +226,26 @@ Bugs found and fixed along the way, as a record of what the checks caught:
   "Memory of Mother" at 48 kHz.
 
 
+Results on Mario & Luigi: Superstar Saga
+----------------------------------------
+
+Driver: **not MP2K.** AlphaDream wrote its own (there is no `'Smsh'` in the
+ROM), so the hook finder finds nothing and every track renders through the
+plain DirectSound path: the driver's own 15768 Hz mix, sinc-reconstructed.
+That removes the hardware's zero-order-hold images but keeps the driver's
+resampling and 8-bit mixing. The sinc/linear/lerp/blam modes don't apply.
+Re-rendering the voices would mean reverse-engineering this driver the way
+MP2K was done here.
+
+- **Loader:** the rip's `.gsflib` size field counts its own 12-byte header,
+  so the section claims 12 bytes more than the file holds. gsf2wav now loads
+  what is there and zeroes the rest; lazygsf reads 12 bytes past its buffer.
+- **Level:** the driver mixes hot. 16 tracks' decoded Opus peaks were above
+  -1 dBFS (up to +0.75), so `tools/data/mlss_overrides.txt` lowers them. The
+  three "99 Unknown Song" tracks share a prefix, which is why overrides keys
+  can now be a full quoted track name.
+
+
 Building and usage
 ------------------
 
