@@ -5,16 +5,18 @@ A testbed for high-fidelity playback of Game Boy Advance music rips (GSF /
 minigsf), built on mGBA's GBA core. It renders a rip to WAV, using the game's
 own code on an emulated console as the source of truth, but it doesn't use
 mGBA's audio output. It takes the raw inputs to the GBA's DAC, and for games
-using Nintendo's MP2K sound driver it re-renders the driver's voices itself at
-high precision.
+using a sound driver it knows (Nintendo's MP2K, and AlphaDream's) it
+re-renders the driver's voices itself at high precision.
 
 It was developed on **Mother 3** (all 276 tracks of the 2006-04-20 rip) and
-also tested on **Wario Land 4** (all 113 tracks of the 2001-08-21 rip).
-Other MP2K games should work; `--mp2k-verify` checks a new one. See
-[Status](#status-and-known-issues).
+also tested on **Wario Land 4** (all 113 tracks of the 2001-08-21 rip) and
+**Mario & Luigi: Superstar Saga** (all 51 tracks of the 2003-11-17 rip, the
+AlphaDream driver). Other MP2K games should work; `--mp2k-verify` checks a
+new one. See [Status](#status-and-known-issues).
 
 Contents: [Background](#background) · [What's added, and why](#whats-added-and-why) ·
-[Results on Mother 3](#results-on-mother-3) · [Building and usage](#building-and-usage) ·
+[Results on Mother 3](#results-on-mother-3) · [Wario Land 4](#results-on-wario-land-4) ·
+[Superstar Saga](#results-on-mario--luigi-superstar-saga) · [Building and usage](#building-and-usage) ·
 [Status and known issues](#status-and-known-issues) ·
 [Working on this](#working-on-this-people-and-agents) · [References](#references)
 
@@ -229,22 +231,42 @@ Bugs found and fixed along the way, as a record of what the checks caught:
 Results on Mario & Luigi: Superstar Saga
 ----------------------------------------
 
-Driver: **not MP2K.** AlphaDream wrote its own (there is no `'Smsh'` in the
-ROM), so the hook finder finds nothing and every track renders through the
-plain DirectSound path: the driver's own 15768 Hz mix, sinc-reconstructed.
-That removes the hardware's zero-order-hold images but keeps the driver's
-resampling and 8-bit mixing. The sinc/linear/lerp/blam modes don't apply.
-Re-rendering the voices would mean reverse-engineering this driver the way
-MP2K was done here.
+Driver: **AlphaDream's own**, not MP2K (there is no `'Smsh'` in the ROM). It
+was found with `gsftrace` (below): the sound DMAs read two 528-byte buffers
+in IWRAM, one ARM routine in IWRAM writes them, and the Thumb routine that
+calls it once per frame sits right before a literal pool naming all of the
+IWRAM routines. `alphadream.h` documents the channel and sample formats.
 
+It's simpler than MP2K and in one way cruder: 8 channels, unsigned 8-bit
+samples, **no interpolation at all** (nearest sample, 10-bit position
+fraction), 15768 Hz, one frame of 264 samples per video frame, and true
+stereo (FIFO A is left, B is right). Each voice's contribution is multiplied
+by a packed left/right volume so one 32-bit add mixes both sides; the output
+is bits 8–15 of each half, which **wraps** instead of clipping. The envelope
+steps once per frame, like MP2K's.
+
+- **Port accuracy:** bit-exact. All 51 tracks × 60 s, 96 million samples,
+  zero differences.
+- **Coverage:** all 50 tracks with sampled instruments locked and rendered
+  with 0 resyncs; "Mario Bros Miss" uses only the PSG.
+- **Linear mode** here means the driver's own nearest-sample playback at
+  15768 Hz, without its 8-bit rounding. It matches the game's output to
+  −33 dB with zero lag. The sinc-family modes render the game's output about
+  half a source sample (~0.03 ms) earlier, because nearest-sample playback
+  delays the signal by that much on average.
+- **The rip's zeroed code.** GSF rippers keep only the bytes the game touched
+  while being ripped, so paths it never took are zeros (`movs r0, r0` in
+  Thumb). Two show up here: the envelope's decay branch goes straight to the
+  sustain level, and part of the division routine is missing (it only matters
+  for samples over 256K frames). The port follows the rip, since that's what
+  the emulated game runs.
 - **Loader:** the rip's `.gsflib` size field counts its own 12-byte header,
   so the section claims 12 bytes more than the file holds. gsf2wav now loads
   what is there and zeroes the rest; lazygsf reads 12 bytes past its buffer.
 - **Level:** the driver mixes hot. 16 tracks' decoded Opus peaks were above
-  -1 dBFS (up to +0.75), so `tools/data/mlss_overrides.txt` lowers them. The
-  three "99 Unknown Song" tracks share a prefix, which is why overrides keys
-  can now be a full quoted track name.
-
+  −1 dBFS in blam mode (up to +0.28), so `tools/data/mlss_overrides.txt`
+  lowers them. The three "99 Unknown Song" tracks share a prefix, which is why
+  overrides keys can also be a full quoted track name.
 
 Building and usage
 ------------------
@@ -420,6 +442,15 @@ extracts a set into it. Sample addresses and statistics
 | `sample_stats.py` | Per-sample usage across a set (via `--sample-stats`) |
 | `sample_noise.py` | Heuristic sample-noisiness ranking (doesn't find the organ) |
 | `gsfpy.py` | Minimal Python PSF loader used by the above |
+
+**Finding an unknown driver** (`build/gsf2wav/gsftrace`, built with gsf2wav):
+`gsftrace GAME.minigsf` prints the sound DMAs' source buffers; `--watch
+LO-HI` lists the code addresses writing a memory range; `--regs ADDR[t] N`
+prints the registers the first N times code at a ROM address runs; `--dump
+DIR` saves IWRAM, EWRAM and the ROM image (keep them out of git). A new
+driver then needs a backend for the renderer (`struct HiFiDriver` in
+`mp2k_hifi.h`: its voices each frame, its exact output, its own algorithm in
+floating point); `alphadream.c` is a compact example.
 
 Code follows mGBA's style (tabs, `CamelCase` types and functions,
 underscore-prefixed static helpers, MPL-2.0 headers). The branch history has one commit per feature or fix, and

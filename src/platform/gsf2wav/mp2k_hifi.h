@@ -9,7 +9,11 @@
 #include "blmix.h"
 #include "mp2k.h"
 
-// High-precision re-render of the MP2K driver's PCM voices, and of its reverb
+// High-precision re-render of a sound driver's PCM voices. It was written for
+// MP2K (hence the names) and takes other drivers through struct HiFiDriver
+// below; alphadream.c is the second one.
+//
+// For MP2K: the driver's voices, and its reverb
 // (a mono feedback echo of the segments mixed one DMA period and one period
 // less a frame ago).
 //
