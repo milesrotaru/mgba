@@ -47,6 +47,7 @@ struct Options {
 	const char* input;
 	const char* output;
 	const char* bios;
+	const char* sampleRom;
 	unsigned rate;
 	enum SampleFormat format;
 	double length;
@@ -519,6 +520,47 @@ static bool _wavWrite(struct WavWriter* w, const double* samples, size_t frames)
 	return true;
 }
 
+// Loads the full ROM a rip was made from, for its sample data. Everything the
+// rip kept must match it, apart from a few bytes a ripper patches (its
+// driver hooks); anything else means a different game or revision.
+static bool _loadSampleRom(const char* path, const struct GSFImage* image, uint8_t** data, size_t* size) {
+	FILE* f = fopen(path, "rb");
+	if (!f) {
+		fprintf(stderr, "Could not open %s\n", path);
+		return false;
+	}
+	fseek(f, 0, SEEK_END);
+	long len = ftell(f);
+	fseek(f, 0, SEEK_SET);
+	if (len <= 0 || len > 0x2000000) {
+		fclose(f);
+		fprintf(stderr, "%s doesn't look like a GBA ROM\n", path);
+		return false;
+	}
+	*data = malloc(len);
+	*size = fread(*data, 1, len, f);
+	fclose(f);
+	size_t n = *size < image->size ? *size : image->size;
+	size_t kept = 0;
+	size_t differ = 0;
+	size_t i;
+	for (i = 0; i < n; ++i) {
+		if (image->data[i]) {
+			++kept;
+			differ += image->data[i] != (*data)[i];
+		}
+	}
+	if (!kept || differ > 4096) {
+		fprintf(stderr, "%s doesn't match the rip (%zu of its %zu kept bytes differ); not using it\n", path, differ, kept);
+		free(*data);
+		*data = NULL;
+		return false;
+	}
+	fprintf(stderr, "Sample data from %s (matches the rip; %zu of %zu kept bytes differ, the ripper's patches)\n", path,
+	        differ, kept);
+	return true;
+}
+
 static void _nullLog(struct mLogger* logger, int category, enum mLogLevel level, const char* format, va_list args) {
 	UNUSED(logger);
 	UNUSED(category);
@@ -561,6 +603,8 @@ static void _usage(const char* arg0) {
 		"      --sample-stats    print which MP2K samples played: notes, seconds, mean/max playback rate, max gain\n"
 		"      --no-fill-holes   read samples as the rip has them; by default zero bytes (bytes the ripper never saw\n"
 		"                        read, zeroed in the rip) are filled from their neighbours before resampling\n"
+		"      --sample-rom FILE the full game ROM the rip came from: the high-precision renderer takes sample data\n"
+		"                        from it, holes and all recovered (the game itself still runs from the rip)\n"
 		"      --mp2k-verify     check the MP2K (or AlphaDream) mixer port against the game's own mixer\n"
 		"\n"
 		"TIME is seconds or [h:]m:ss[.fff]. Without tags, length defaults to %g s and fade to %g s.\n",
@@ -583,6 +627,7 @@ static bool _parseArgs(int argc, char** argv, struct Options* opts) {
 		OPT_SOLO_SAMPLE,
 		OPT_SAMPLE_STATS,
 		OPT_NO_FILL_HOLES,
+		OPT_SAMPLE_ROM,
 		OPT_LINEAR_SAMPLES,
 	};
 	static const struct option longOpts[] = {
@@ -605,6 +650,7 @@ static bool _parseArgs(int argc, char** argv, struct Options* opts) {
 		{ "solo-sample", required_argument, NULL, OPT_SOLO_SAMPLE },
 		{ "sample-stats", no_argument, NULL, OPT_SAMPLE_STATS },
 		{ "no-fill-holes", no_argument, NULL, OPT_NO_FILL_HOLES },
+		{ "sample-rom", required_argument, NULL, OPT_SAMPLE_ROM },
 		{ "mp2k-linear-samples", required_argument, NULL, OPT_LINEAR_SAMPLES },
 		{ "help", no_argument, NULL, 'h' },
 		{ 0 }
@@ -733,6 +779,9 @@ static bool _parseArgs(int argc, char** argv, struct Options* opts) {
 		}
 		case OPT_NO_FILL_HOLES:
 			opts->noFillHoles = true;
+			break;
+		case OPT_SAMPLE_ROM:
+			opts->sampleRom = optarg;
 			break;
 		case OPT_SAMPLE_STATS:
 			opts->sampleStats = true;
@@ -888,15 +937,22 @@ int main(int argc, char** argv) {
 		return 1;
 	}
 	const struct HiFiDriver* hifiDriver = hookAddress ? &MP2KHiFiDriver : haveAD ? &ADHiFiDriver : NULL;
+	uint8_t* sampleRom = NULL;
+	size_t sampleRomSize = 0;
+	if (opts.hifi && hifiDriver && opts.sampleRom && !_loadSampleRom(opts.sampleRom, &image, &sampleRom, &sampleRomSize)) {
+		return 1;
+	}
 	if (opts.hifi && hifiDriver) {
-		MP2KHiFiInit(&hifi, hifiDriver, &mixer, &mp2k.mem.d, image.data, image.size, GBA_ARM7TDMI_FREQUENCY, opts.rampMs / 1000.0);
+		MP2KHiFiInit(&hifi, hifiDriver, &mixer, &mp2k.mem.d, sampleRom ? sampleRom : image.data,
+		             sampleRom ? sampleRomSize : image.size, GBA_ARM7TDMI_FREQUENCY, opts.rampMs / 1000.0);
 		hifi.mode = opts.hifiMode;
 		hifi.mutedChannels = opts.muteChannels;
 		hifi.bandwidth = opts.bandwidth;
 		hifi.soloWav = opts.soloWav;
 		memcpy(hifi.linearWavs, opts.linearWavs, sizeof(opts.linearWavs));
 		hifi.linearWavCount = opts.linearWavCount;
-		hifi.fillHoles = !opts.noFillHoles;
+		// A full ROM has no holes, only real zeros
+		hifi.fillHoles = !opts.noFillHoles && !sampleRom;
 		if (opts.sampleStats) {
 			hifi.collectStats = true;
 			hifi.stats = calloc(MP2K_HIFI_MAX_SAMPLE_STATS, sizeof(*hifi.stats));
