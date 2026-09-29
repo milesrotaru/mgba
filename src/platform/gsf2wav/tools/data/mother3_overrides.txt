@@ -3,9 +3,10 @@
 # Format: track filename prefix (up to the first space), then gsf2wav options.
 # Options here are added after the set-wide ones, so they can override them.
 
-# Organ sample 082ED1BC is gritty in sinc mode (jagged waveform played 3-5x up);
-# render it the way the driver does. Everything else in the song stays sinc.
-006 --mp2k-linear-samples 082ED1BC
+# 006's organ (082ED1BC) used to be rendered like the driver
+# (--mp2k-linear-samples) because it was gritty in sinc mode. The grit was the
+# rip's holes: bytes the ripper never saw read, zeroed. With the holes filled,
+# or the real data read from the game ROM (--sample-rom), it no longer needs it.
 
 # Peaks at +2.2 dBFS; lower it so integer and lossy output doesn't clip.
 918 -g -3

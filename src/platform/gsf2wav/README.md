@@ -343,17 +343,16 @@ Status and known issues
   compressed and reversed samples, which will render wrong. Run
   `--mp2k-verify` on a new game first; it reports any frame where the port
   and the game disagree.
-- **Some samples are gritty in sinc mode.** In Mother 3, track 006's organ
-  (`082ED1BC`) is a jagged, pulse-like waveform played 3–5× above its recorded
-  rate. Sinc reproduces its jumps faithfully, and the game's linear
-  interpolation smooths them over. The opposite is true for low-pitched voices:
-  006's intro chords (played as low as 0.33×) sound grainy in linear mode,
-  because linear interpolation leaves images of the stretched waveform, and
-  they're clean in sinc. Neither mode suits the whole song, so
-  `--mp2k-linear-samples 082ED1BC` renders just the organ linearly. The organ
-  is only used in 006. Simple statistics on the sample data don't pick out
-  samples like this (see `tools/sample_noise.py`), so overrides are chosen by
-  ear, with `--solo-sample` and `--sample-stats` to find the candidates.
+- **Some samples sounded gritty in sinc mode.** In Mother 3, track 006's
+  organ (`082ED1BC`, played 3–5× above its recorded rate) was clean only when
+  rendered like the driver (`--mp2k-linear-samples`), and lower cutoffs didn't
+  help. That was first read as a harsh waveform; it was the rip's holes (next
+  item). With the holes filled, or the real data from the ROM, the override
+  isn't needed. `--mp2k-linear-samples` stays for taste: low-pitched voices
+  still differ audibly between the modes (006's intro chords, played as low as
+  0.33×, are grainy in linear mode). Simple statistics on the sample data
+  don't pick out problem samples (see `tools/sample_noise.py`); compare
+  against the ROM, or listen with `--solo-sample` and `--sample-stats`.
 - **Tracks can clip.** Float output keeps overs (Mother 3's unused Giygas
   battle track peaks at +2.2 dBFS). Lossy encoding also overshoots: Opus
   pushed three Mother 3 tracks with float peaks of −0.07 to −0.33 dBFS past
@@ -365,6 +364,19 @@ Status and known issues
 - **Late timing lock.** The re-render holds output until it finds the
   driver's first audible frame in the FIFO stream. It gives up after about
   15 s and falls back to the captured stream.
+
+- **Rips have holes in sped-up samples.** GSF rippers zero every ROM byte
+  the game didn't read while being ripped, and a sample played well above its
+  recorded rate is only read every few bytes. The driver never reads the
+  holes, but sinc and its relatives read every byte. By default zero bytes in
+  a sample are filled by interpolating their neighbours (`--no-fill-holes`
+  turns that off); `--sample-rom FILE` reads the real data from the full ROM
+  the rip came from instead (it must match every byte the rip kept, apart from
+  a few ripper patches). In Mother 3, 6 of the 306 samples the songs use have
+  holes where they're played, in 9 tracks (006, 020, 071, 101, 113, 152, 179,
+  203, 244). Filling gets most within −24 to −38 dB of the real data; one
+  sample in 203, played at up to 16×, is too sparse to fill (−3.6 dB) and
+  needs the ROM. This, not the waveform, was 006's organ grit.
 
 ### Not started: live playback in the libretro core
 
