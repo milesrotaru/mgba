@@ -31,7 +31,7 @@ haven't compared it against a recording of a real GBA.
 It was developed on **Mother 3** (all 276 tracks of the 2006-04-20 rip) and
 also tried on **Wario Land 4** (113 tracks) and **Mario & Luigi: Superstar Saga**
 (51 tracks). Three games is not many. Other games may well break it;
-`--mp2k-verify` will at least tell you if the mixer port disagrees with the
+`--verify` will at least tell you if the mixer port disagrees with the
 game. See [Status](#status-and-known-issues).
 
 Contents: [Background](#background) · [What's added, and why](#whats-added-and-why) ·
@@ -127,7 +127,14 @@ for upstream.
 | `mp2k.c` | C reimplementation of Mother 3's `SoundMainRAM` (SDK 3.0 revision): envelopes, fixed-frequency and interpolated paths, loop wrap, reverb, byte-lane wraparound | A model of the driver that I can check against the game exactly |
 | `hifi.c` | Re-renders the driver's voices from its state; the renderer is driver-neutral | Recovers what the driver's mix throws away |
 | `alphadream.c` | The same for AlphaDream's driver | Superstar Saga |
-| `main.c` | CLI, capture observer, WAV writer, driver hooks | |
+| `render.c` | Renders one track: loads it, runs the core, collects the audio, writes the WAV; every error path cleans up | One function a batch can call from several threads |
+| `capture.c` | Receives the PSG and DirectSound levels from the core as they change | Bypasses the core's own sampling grid and resampler |
+| `hooks.c` | Code hooks that catch each sound driver mid-frame, for the renderer and for `--verify` | |
+| `options.c`, `overrides.c` | The option table (help text is generated from it), strict value checking, and the per-track overrides file | |
+| `wav.c` | Streaming WAV writer: float, or 24/16-bit with dither | |
+| `main.c` | Inputs, output names, a pool of worker threads, progress and summary | |
+| `platform.c` | The few OS calls: UTF-8 paths on Windows, directory scans, wildcards, console | Windows' C library can't open Japanese file names |
+| `msglog.c` | Collects each render's messages so renders on different threads don't interleave | |
 | `gsftrace.c` | Small aid for finding a driver in an unknown game | |
 
 How a render works:
@@ -158,11 +165,11 @@ How a render works:
      FIFO stream. It must match exactly once, and a later frame must confirm
      it at the predicted place. After that, every frame is placed where the
      hardware played it.
-4. `--mp2k-verify` runs the reimplemented mixer on a copy of the driver state
+4. `--verify` runs the reimplemented mixer on a copy of the driver state
    every frame and compares the result with what the game actually wrote. This
    is the main thing I relied on to catch mistakes in the model.
 
-There are four ways to resample a voice (`--mp2k-mix`), which differ mostly in
+There are four ways to resample a voice (`--mix`), which differ mostly in
 taste and in how they treat high frequencies. I only have my own ears and a few
 spectra to go on:
 
@@ -308,70 +315,156 @@ steps once per frame, like MP2K's.
 Building and usage
 ------------------
 
+### Quick start
+
+On Windows, drag `.minigsf` files (or a folder of them) onto `gsf2wav.exe`;
+see the README.txt in the Windows zip. From a terminal:
+
+    gsf2wav "01 Title.minigsf"            writes "01 Title.wav" next to it
+    gsf2wav -o wav/ rips/mother3/         every track in the folder, into wav/
+    gsf2wav -j 4 --mix blam --overrides levels.txt -o wav/ rips/
+
+Each WAV is written as `NAME.wav.part` and renamed when it's complete, so a
+WAV that exists is always a whole one, and `--skip-existing` can resume a
+batch. The older form `gsf2wav [options] INPUT OUTPUT.wav` still works. Exit
+status is 0 if everything rendered, 1 if some track failed, 2 for a command
+line problem.
+
+### Building on Linux
+
     mkdir build && cd build
     cmake .. -DBUILD_GSF2WAV=ON -DBUILD_QT=OFF -DBUILD_SDL=OFF -DUSE_FFMPEG=OFF
     make gsf2wav
 
-This needs zlib. The binary is `build/gsf2wav/gsf2wav`.
+This needs zlib. The binary is `build/gsf2wav/gsf2wav`. `gsftrace`, the
+reverse-engineering aid, is built alongside it.
 
-    gsf2wav [options] INPUT.minigsf OUTPUT.wav
+### Building for Windows
 
-Output and length:
+`tools/build-windows.sh` cross-compiles a 64-bit `gsf2wav.exe` with MinGW-w64
+(the apt packages are listed at the top of the script) and zips it with a
+plain-text README, the license and the overrides files. The exe is statically
+linked, so it needs only DLLs every Windows installation has. I tested it by
+running the full test suite and the 37-case comparison against the Linux build
+under Wine (`GSF2WAV_RUNNER=wine64 python3 test/run.py gsf2wav.exe`); the audio
+came out byte-for-byte identical. **It hasn't been run on a real Windows
+machine.** Windows-specific code is in `platform.c`: UTF-8 file names (Japanese
+rip folders), both path separators, wildcard expansion (cmd.exe leaves that to
+the program), and a "press Enter" pause when the program was started from
+Explorer and would otherwise close its window before anyone could read it.
 
-    -r, --rate HZ         output sample rate (default 48000)
-    -b, --bits FMT        32f, 24 or 16 (default 32f; integer formats are TPDF dithered)
-    -l, --length TIME     play length before fade, overrides the length tag
-    -f, --fade TIME       fade length, overrides the fade tag
-    -g, --gain DB         extra gain in dB
-        --no-volume-tag   ignore the volume tag
+### Options
 
-TIME is seconds or `[h:]m:ss[.fff]`. Without tags, length defaults to 150 s
-and fade to 10 s.
+`gsf2wav --help` prints this (it's generated from the same table the parser
+uses). The `--mp2k-mix`, `--mp2k-bandwidth`, `--mp2k-source-cutoff`,
+`--mp2k-linear-samples` and `--mp2k-verify` names from before the AlphaDream
+driver existed are still accepted.
 
-Re-rendering the driver's voices (on by default when a known driver is found):
+    usage: gsf2wav [options] INPUT...
 
-        --no-hifi         output the driver's own mix instead of re-rendering its voices
-        --mp2k-mix MODE   sinc (default), linear, lerp or blam
-        --mp2k-bandwidth HZ   cap each voice's bandwidth; "driver" = the driver's Nyquist
-        --mp2k-source-cutoff F  each voice's cutoff as a fraction of its playback rate (default 0.47)
-        --mp2k-linear-samples LIST  render these samples (hex header addresses) like the
-                          driver, linear at its mixing rate; everything else stays sinc
-        --ramp MS         volume change and note cut smoothing (default 2; 0 = the driver's steps)
-        --no-fill-holes   read samples as the rip has them (see "Rips have holes")
-        --sample-rom FILE the full ROM the rip came from, for exact sample data
+    Renders Game Boy Advance music rips (.minigsf / .gsf) to WAV. INPUT is a file,
+    a folder of them, or a wildcard. Each WAV goes next to its input unless -o
+    says otherwise. TIME is seconds or [h:]m:ss[.fff].
 
-Other audio:
+    Examples:
+      gsf2wav "01 Title.minigsf"
+      gsf2wav -o wav/ --mix blam rips/mother3/
+      gsf2wav -b 24 -g -1 -j 4 --overrides levels.txt *.minigsf
 
-        --fifo-hold       DirectSound as the hardware's sample-and-hold, not sinc-interpolated
-        --psg-grid CYCLES PSG sampling grid (default 8, already exact)
-        --bios FILE       use a real GBA BIOS instead of mGBA's built-in one
+    Output:
+      -o, --output PATH         folder for the WAVs (made if missing), or the file
+                                name for a single input
+      -r, --rate HZ             sample rate (default 48000)
+      -b, --bits FMT            32f (float, the default), 24 or 16; integer
+                                formats get TPDF dither
+      -l, --length TIME         play time before the fade (default: the file's
+                                length tag, else 150 s)
+      -f, --fade TIME           fade-out time (default: the file's fade tag, else
+                                10 s)
+      -g, --gain DB             extra gain in dB; negative turns it down
+          --no-volume-tag       ignore the file's volume tag
 
-Isolation and diagnostics:
+    Sound:
+          --no-hifi             play the game's own mix instead of re-rendering
+                                its voices
+          --mix MODE            how each voice is resampled when re-rendering:
+                                sinc (default): from its source straight to the
+                                output rate
+                                linear: the driver's own method, at its mixing
+                                rate, without its 8-bit loss
+                                lerp: linear interpolation at the output rate, not
+                                bandlimited
+                                blam: linear interpolation, bandlimited to the
+                                output rate
+          --bandwidth HZ        cap each voice's bandwidth; "driver" means the
+                                driver's own Nyquist
+          --source-cutoff F     each voice's cutoff as a fraction of its own
+                                playback rate (default 0.47)
+          --linear-samples LIST
+                                render these samples (hex header addresses,
+                                comma-separated) the way the
+                                driver does, whatever --mix says
+          --ramp MS             volume change and note cut smoothing (default 2; 0
+                                = the driver's steps)
+          --fifo-hold           play DirectSound as the hardware's sample-and-hold
+                                instead of
+                                sinc-interpolating it
+          --psg-grid CYCLES     PSG sampling grid in CPU cycles (default 8,
+                                already exact)
+          --bios FILE           use a real GBA BIOS instead of mGBA's built-in one
 
-        --mute LIST       silence psg, pcm, or driver channels, e.g. --mute psg,0,3
-        --solo-sample ADDR  only voices playing the sample whose header is at hex ADDR
-        --sample-stats    list the samples played (stdout)
-        --mp2k-verify     check the mixer port against the game's mixer every frame
+    Samples (rips are missing bytes of the game's sample data):
+          --sample-rom FILE     the full game ROM the rip came from: sample data
+                                is read from it, which
+                                recovers the bytes the ripper never saw (the game
+                                still runs from the rip)
+          --no-fill-holes       read samples exactly as the rip has them; normally
+                                zero bytes (never read
+                                while ripping) are filled in from their neighbours
+
+    Batches:
+          --overrides FILE      per-track options: one line per track, "name
+                                options..." (see the README)
+          --skip-existing       don't render tracks whose WAV already exists
+      -j, --jobs N              render N tracks at once (default: one per core, at
+                                most 8)
+      -q, --quiet               only warnings and errors
+      -v, --verbose             also print driver, timing and sample details
+
+    Diagnostics:
+          --mute LIST           silence psg, pcm, or driver channels 0-11, e.g.
+                                psg,0,3
+          --solo-sample ADDR    only voices playing the sample at hex header
+                                address ADDR (mutes the PSG)
+          --sample-stats        print which samples played: notes, seconds, mean
+                                and max playback rate, max gain
+          --verify              check the driver port against the game's own
+                                mixer, every frame
+
+    Other:
+          --version             print the version and where the source is
+      -h, --help                this text
+
+An overrides file (`--overrides`) gives per-track options. Each line is a
+track's file name without its extension, or just its first word (usually the
+track number), then options; the whole name wins over the first word, `#`
+starts a comment, and a name with spaces goes in quotes. A track's options are
+applied after the command line's, so they can override it. The files I've
+made are `tools/data/mother3_overrides.txt`, `wl4_overrides.txt` and
+`mlss_overrides.txt`; they mostly just lower levels so lossy encoding doesn't
+clip. The whole file is checked before anything renders.
 
 The BIOS barely mattered for Mother 3 in what I tried. Over 60 s of three songs
 it only calls `Halt`, `Div`, `CpuSet`, `CpuFastSet` and `LZ77UnCompVram`, all of
 which mGBA's built-in BIOS should reproduce. It never calls the BIOS's own
 sound routines.
 
-Rendering a whole set to tagged Opus (needs `opusenc`):
-
-    python3 src/platform/gsf2wav/tools/render_set.py build/gsf2wav/gsf2wav SET_DIR OUT_DIR \
-        --bitrate 96 --zip out.zip [--overrides FILE] -- -r 48000 -b 32f
-
-An overrides file gives per-track options (one line each: track filename
-prefix, or the full name in quotes, then gsf2wav options). The ones I've made
-are `tools/data/mother3_overrides.txt`, `wl4_overrides.txt` and
-`mlss_overrides.txt`; they mostly just lower levels so lossy encoding doesn't
-clip. For Mother 3, the way I've been rendering it:
+Making Opus files (needs `opusenc`) is a separate step, which
+`tools/render_set.py` does for a whole set (tags from the rip, one zip):
 
     python3 src/platform/gsf2wav/tools/render_set.py build/gsf2wav/gsf2wav rips/mother3 OUT_DIR \
         --bitrate 96 --overrides src/platform/gsf2wav/tools/data/mother3_overrides.txt \
-        -- -r 48000 -b 32f --mp2k-mix blam
+        -- -r 48000 -b 32f --mix blam
 
 
 Status and known issues
@@ -381,7 +474,7 @@ Things I know are wrong or unfinished, and things I don't know:
 
 - **Only the SDK 3.0 mixer revision is ported.** Later revisions added
   compressed and reversed samples, which will render wrong. Run
-  `--mp2k-verify` on a new game first; it reports any frame where the port and
+  `--verify` on a new game first; it reports any frame where the port and
   the game disagree. I've only done that on three games.
 - **I haven't compared any of this against real hardware,** and the listening
   I've done is mine alone and not blind. The sound-quality claims above should
@@ -407,7 +500,7 @@ Things I know are wrong or unfinished, and things I don't know:
     006 is three files, 006a–c).
   - `tools/rom_holes.py` does this survey for any set, given its ROM.
   - This is also what I'd wrongly blamed on the waveform for Mother 3's 006
-    organ. `--mp2k-linear-samples` is still there for taste: low-pitched voices
+    organ. `--linear-samples` is still there for taste: low-pitched voices
     still differ audibly between modes.
 - **Tracks can clip.** Float output keeps overs (Mother 3's unused Giygas
   battle track peaks at +2.2 dBFS). Lossy encoding also overshoots: Opus pushed
@@ -457,8 +550,11 @@ judgement call.
 
 1. `python3 src/platform/gsf2wav/test/run.py build/gsf2wav/gsf2wav` for the
    synthetic suite (needs clang with the ARM target, ld.lld, llvm-objcopy and
-   numpy). All five checks should pass.
-2. `--mp2k-verify` on a few tracks of the game you're working on. It should
+   numpy). The first five checks are about the audio; the rest exercise the
+   command line on the synthetic GSFs (folders, `-o`, overrides, `-j`, errors,
+   non-ASCII names). All 27 should pass. Set `GSF2WAV_RUNNER=wine64` to run the
+   Windows exe under Wine.
+2. `--verify` on a few tracks of the game you're working on. It should
    report zero differing frames. Any mixer change must keep this true.
 3. A sweep across the set. For example,
    `python3 src/platform/gsf2wav/tools/batch.py build/gsf2wav/gsf2wav rips/mother3 --every 3 --grep high-precision -- -l 45 -f 0`
@@ -472,6 +568,7 @@ judgement call.
 
 | Script | Purpose |
 |---|---|
+| `build-windows.sh`, `package_windows.py` | Cross-build `gsf2wav.exe` with MinGW-w64 and zip it with its docs |
 | `fetch_set.py` | Download a GSF set into `rips/` |
 | `batch.py` | Run gsf2wav over a set in parallel, filtering its stderr |
 | `render_set.py` | Render a set to tagged Opus and zip it |
