@@ -1,4 +1,10 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 gsf2wav contributors
+#
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
 # Runs gsf2wav --sample-stats over a whole set (tag lengths) and writes one
 # aggregated CSV of which MP2K samples play, for how long, how high, how loud.
 #   sample_stats.py GSF2WAV DIR out.csv

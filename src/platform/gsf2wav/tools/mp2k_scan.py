@@ -1,4 +1,10 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 gsf2wav contributors
+#
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
 # Finds the MP2K (m4a) driver's SoundMain in a GSF's ROM image by its literal
 # pool (SOUND_INFO_PTR 0x03007FF0 and ID_NUMBER 'Smsh'), then the
 # "ldr r6; ldr r3; bx r3" tail that jumps into SoundMainRAM.

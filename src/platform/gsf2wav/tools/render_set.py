@@ -1,4 +1,10 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 gsf2wav contributors
+#
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
 # Renders every (mini)GSF in a set with gsf2wav, encodes each to Opus with the
 # rip's tags, and zips the result. Needs opusenc (opus-tools).
 #   render_set.py GSF2WAV SET_DIR OUT_DIR [--bitrate KBPS] [--zip NAME.zip]

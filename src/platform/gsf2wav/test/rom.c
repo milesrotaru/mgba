@@ -1,3 +1,9 @@
+/* Copyright (c) 2026 gsf2wav contributors
+ *
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+
 #define R16(a) (*(volatile unsigned short*)(a))
 #define R32(a) (*(volatile unsigned int*)(a))
 void _start(void) __attribute__((section(".text.start"), naked));

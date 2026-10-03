@@ -1,4 +1,10 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 gsf2wav contributors
+#
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
 # Which samples a rip has holes in, measured against the full game ROM.
 # GSF rippers zero every ROM byte the game didn't read while being ripped, so
 # a sample played well above its recorded rate has zeroed gaps. For each

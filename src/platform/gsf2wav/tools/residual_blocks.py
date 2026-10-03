@@ -1,4 +1,10 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 gsf2wav contributors
+#
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
 # Residual (A-B, both lowpassed to a common band) per 20 ms block, to find
 # localized mismatches like clicks, missed notes or desyncs.
 #   residual_blocks.py a.wav b.wav [cutoff_hz] [top_n]

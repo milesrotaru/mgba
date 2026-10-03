@@ -1,4 +1,10 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 gsf2wav contributors
+#
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
 # Crude click detector: energy above a highpass in 1 ms windows, flagging
 # windows far above the median of the surrounding 200 ms.
 #   clicks.py file.wav [highpass_hz] [threshold_db]

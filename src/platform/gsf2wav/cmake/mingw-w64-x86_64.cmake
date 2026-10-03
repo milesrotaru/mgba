@@ -1,3 +1,9 @@
+# Copyright (c) 2026 gsf2wav contributors
+#
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
 # CMake toolchain file for cross-compiling gsf2wav to 64-bit Windows with
 # MinGW-w64 (Debian/Ubuntu: gcc-mingw-w64-x86-64-posix mingw-w64-x86-64-dev).
 # The "posix" threading flavour is used because gsf2wav renders tracks on

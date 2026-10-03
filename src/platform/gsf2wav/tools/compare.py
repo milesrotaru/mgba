@@ -1,4 +1,10 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 gsf2wav contributors
+#
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
 # Compares two gsf2wav renders of the same track: lag, gain and residual,
 # both lowpassed to a common band (default 7 kHz, under MP2K's usual Nyquist).
 #   compare.py a.wav b.wav [cutoff_hz]
