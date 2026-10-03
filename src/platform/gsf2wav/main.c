@@ -59,7 +59,7 @@ struct Batch {
 	Mutex lock;
 };
 
-static char* _dup(const char* s, size_t n) {
+static char* _copyString(const char* s, size_t n) {
 	char* out = malloc(n + 1);
 	memcpy(out, s, n);
 	out[n] = '\0';
@@ -114,7 +114,7 @@ static struct Job* _addJob(struct Batch* batch, const char* input) {
 	memset(job, 0, sizeof(*job));
 	job->input = strdup(input);
 	const char* base = PlatBaseName(input);
-	job->stem = _dup(base, PlatExtension(base) - base);
+	job->stem = _copyString(base, PlatExtension(base) - base);
 	MsgLogInit(&job->log);
 	return job;
 }

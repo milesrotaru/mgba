@@ -366,7 +366,10 @@ void PlatConsoleInit(void) {
 
 bool PlatConsoleIsOwned(void) {
 	DWORD pids[2];
-	return GetConsoleProcessList(pids, 2) == 1;
+	DWORD mode;
+	// Only us attached to the console, and a person at the keyboard: with
+	// stdin redirected there's nobody to press Enter
+	return GetConsoleProcessList(pids, 2) == 1 && GetConsoleMode(GetStdHandle(STD_INPUT_HANDLE), &mode);
 }
 
 #else
