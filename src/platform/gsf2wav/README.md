@@ -125,7 +125,7 @@ for upstream.
 | `psf.c` | PSF/minigsf loader: zlib, CRC, tags, `_lib` chains in psflib order, case-insensitive lib lookup | Rips are usually made on case-insensitive filesystems |
 | `blmix.c` | Band-limited renderer evaluated at the output instants: steps (BLEP) and points (windowed sinc), Kaiser kernel, about 120 dB stopband, double precision | No intermediate sample rate anywhere in the chain |
 | `mp2k.c` | C reimplementation of Mother 3's `SoundMainRAM` (SDK 3.0 revision): envelopes, fixed-frequency and interpolated paths, loop wrap, reverb, byte-lane wraparound | A model of the driver that I can check against the game exactly |
-| `mp2k_hifi.c` | Re-renders the driver's voices from its state; the renderer is driver-neutral | Recovers what the driver's mix throws away |
+| `hifi.c` | Re-renders the driver's voices from its state; the renderer is driver-neutral | Recovers what the driver's mix throws away |
 | `alphadream.c` | The same for AlphaDream's driver | Superstar Saga |
 | `main.c` | CLI, capture observer, WAV writer, driver hooks | |
 | `gsftrace.c` | Small aid for finding a driver in an unknown game | |
@@ -492,7 +492,7 @@ judgement call.
 lists the code addresses writing a memory range; `--regs ADDR[t] N` prints the
 registers the first N times code at a ROM address runs; `--dump DIR` saves
 IWRAM, EWRAM and the ROM image (keep them out of git). A new driver then needs
-a backend for the renderer (`struct HiFiDriver` in `mp2k_hifi.h`: its voices
+a backend for the renderer (`struct HiFiDriver` in `hifi.h`: its voices
 each frame, its exact output, its own algorithm in floating point);
 `alphadream.c` is a compact example. This is how I found AlphaDream's driver,
 and it may not generalize.

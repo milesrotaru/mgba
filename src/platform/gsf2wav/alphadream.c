@@ -5,7 +5,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 #include "alphadream.h"
 
-#include "mp2k_hifi.h"
+#include "hifi.h"
 
 #include <string.h>
 
@@ -352,7 +352,7 @@ static void _hifiMixFloat(const void* frame, struct MP2KMemory* mem, uint32_t mu
 	ADMixFloat(&copy, mem, mutedChannels, soloWav, half0, half1);
 }
 
-const struct HiFiDriver ADHiFiDriver = {
+const struct HiFiDriver ADBackend = {
 	.name = "AlphaDream",
 	.frameSize = sizeof(struct ADFrame),
 	.info = _hifiInfo,

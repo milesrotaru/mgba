@@ -94,6 +94,6 @@ void ADMixFloat(struct ADFrame* frame, struct MP2KMemory* mem, uint32_t mutedCha
 
 // For the high-precision renderer: half 0 is FIFO A's buffer, half 1 FIFO B's
 struct HiFiDriver;
-extern const struct HiFiDriver ADHiFiDriver;
+extern const struct HiFiDriver ADBackend;
 
 #endif

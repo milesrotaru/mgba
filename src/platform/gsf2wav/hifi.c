@@ -3,7 +3,7 @@
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
-#include "mp2k_hifi.h"
+#include "hifi.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -57,7 +57,7 @@ static double _besselI0(double x) {
 	return sum;
 }
 
-void MP2KHiFiInit(struct MP2KHiFi* hifi, const struct HiFiDriver* driver, struct BLMixer* out, struct MP2KMemory* mem,
+void HiFiInit(struct HiFi* hifi, const struct HiFiDriver* driver, struct BLMixer* out, struct MP2KMemory* mem,
                   const uint8_t* rom, size_t romSize, double clockRate, double rampSeconds) {
 	memset(hifi, 0, sizeof(*hifi));
 	hifi->driver = driver;
@@ -110,9 +110,9 @@ void MP2KHiFiInit(struct MP2KHiFi* hifi, const struct HiFiDriver* driver, struct
 		hifi->fifoHistory[f] = malloc(FIFO_HISTORY);
 		hifi->fifoTimes[f] = malloc(FIFO_HISTORY * sizeof(uint64_t));
 	}
-	hifi->pending = malloc(MP2K_HIFI_MAX_PENDING * sizeof(*hifi->pending));
-	hifi->pendingFrames = malloc(MP2K_HIFI_MAX_PENDING * driver->frameSize);
-	hifi->pendingExact = malloc(MP2K_HIFI_MAX_PENDING * sizeof(*hifi->pendingExact));
+	hifi->pending = malloc(HIFI_MAX_PENDING * sizeof(*hifi->pending));
+	hifi->pendingFrames = malloc(HIFI_MAX_PENDING * driver->frameSize);
+	hifi->pendingExact = malloc(HIFI_MAX_PENDING * sizeof(*hifi->pendingExact));
 	hifi->horizon = INFINITY;
 	hifi->sourceCutoff = VOICE_SOURCE_CUTOFF;
 	hifi->fillHoles = true;
@@ -130,7 +130,7 @@ void MP2KHiFiInit(struct MP2KHiFi* hifi, const struct HiFiDriver* driver, struct
 	hifi->linearHistory = calloc(LINEAR_HISTORY_FRAMES * MP2K_MAX_SAMPLES_PER_VBLANK, sizeof(double));
 }
 
-void MP2KHiFiDeinit(struct MP2KHiFi* hifi) {
+void HiFiDeinit(struct HiFi* hifi) {
 	free(hifi->table);
 	free(hifi->taps);
 	free(hifi->blamQ);
@@ -156,7 +156,7 @@ void MP2KHiFiDeinit(struct MP2KHiFi* hifi) {
 	free(hifi->stats);
 }
 
-static inline double _kernel(const struct MP2KHiFi* hifi, double u) {
+static inline double _kernel(const struct HiFi* hifi, double u) {
 	u = fabs(u) * VOICE_TABLE_RES;
 	size_t i = (size_t) u;
 	if (i >= (size_t) VOICE_ZERO_CROSSINGS * VOICE_TABLE_RES) {
@@ -169,7 +169,7 @@ static inline double _kernel(const struct MP2KHiFi* hifi, double u) {
 // Q(y), the second integral of the unit kernel, by cubic Hermite
 // interpolation with its derivative S. Past the kernel's end it continues
 // as a straight line of slope 1/2.
-static inline double _blamQ(const struct MP2KHiFi* hifi, double y) {
+static inline double _blamQ(const struct HiFi* hifi, double y) {
 	y = fabs(y);
 	const size_t end = (size_t) VOICE_ZERO_CROSSINGS * VOICE_TABLE_RES;
 	double a = y * VOICE_TABLE_RES;
@@ -186,7 +186,7 @@ static inline double _blamQ(const struct MP2KHiFi* hifi, double y) {
 }
 
 // Sample k of the signal the voice plays: the data once, then the loop forever
-static inline double _sourceSample(const struct MP2KHiFi* hifi, const struct MP2KHiFiVoice* v, int64_t k) {
+static inline double _sourceSample(const struct HiFi* hifi, const struct HiFiVoice* v, int64_t k) {
 	if (k < 0) {
 		return 0;
 	}
@@ -211,7 +211,7 @@ static inline double _sourceSample(const struct MP2KHiFi* hifi, const struct MP2
 // The sample's values with runs of zero bytes (the rip's holes) replaced by
 // linear interpolation between the known samples on either side. Includes
 // the byte after the end, which the driver's interpolation can read.
-static const double* _repaired(struct MP2KHiFi* hifi, const struct MP2KHiFiVoice* v) {
+static const double* _repaired(struct HiFi* hifi, const struct HiFiVoice* v) {
 	size_t r;
 	for (r = 0; r < hifi->repairCount; ++r) {
 		if (hifi->repairs[r].address == v->dataAddress && hifi->repairs[r].size == v->size) {
@@ -257,7 +257,7 @@ static const double* _repaired(struct MP2KHiFi* hifi, const struct MP2KHiFiVoice
 	return out;
 }
 
-static bool _voiceStart(struct MP2KHiFi* hifi, struct MP2KHiFiVoice* v, const struct HiFiVoiceIn* in) {
+static bool _voiceStart(struct HiFi* hifi, struct HiFiVoice* v, const struct HiFiVoiceIn* in) {
 	memset(v, 0, sizeof(*v));
 	v->active = true;
 	v->wav = in->wav;
@@ -286,16 +286,16 @@ static bool _voiceStart(struct MP2KHiFi* hifi, struct MP2KHiFiVoice* v, const st
 	return v->size > 0;
 }
 
-static double _wrap(const struct MP2KHiFiVoice* v, double u) {
+static double _wrap(const struct HiFiVoice* v, double u) {
 	if (u < v->size || !v->loopLength) {
 		return u;
 	}
 	return v->loopStart + fmod(u - v->size, (double) v->loopLength);
 }
 
-static void _ghost(struct MP2KHiFi* hifi, const struct MP2KHiFiVoice* v, double stopTime) {
+static void _ghost(struct HiFi* hifi, const struct HiFiVoice* v, double stopTime) {
 	int i;
-	for (i = 0; i < MP2K_HIFI_MAX_GHOSTS; ++i) {
+	for (i = 0; i < HIFI_MAX_GHOSTS; ++i) {
 		if (!hifi->ghosts[i].active) {
 			hifi->ghosts[i] = *v;
 			hifi->ghosts[i].stopTime = stopTime;
@@ -316,7 +316,7 @@ struct FrameTiming {
 // Renders one voice over the frame. mode 0: gain ramps from prevGain to gain
 // starting at the frame start; mode 1 (ghost): ramps from gain to 0 starting
 // at stopTime. Positions are u + tau * step, tau in mixer samples.
-static void _renderVoice(struct MP2KHiFi* hifi, struct MP2KHiFiVoice* v, const struct FrameTiming* ft, bool ghost) {
+static void _renderVoice(struct HiFi* hifi, struct HiFiVoice* v, const struct FrameTiming* ft, bool ghost) {
 	if ((hifi->mutedChannels & (1u << v->channel)) || (hifi->soloWav && v->wav != hifi->soloWav)) {
 		if (ghost) {
 			v->active = false;
@@ -415,7 +415,7 @@ static void _renderVoice(struct MP2KHiFi* hifi, struct MP2KHiFiVoice* v, const s
 			continue;
 		}
 		double u = v->u + tau * v->step;
-		if (hifi->mode == MP2K_HIFI_BLAM && !v->linear) {
+		if (hifi->mode == HIFI_MIX_BLAM && !v->linear) {
 			// The kernel is the linear-interpolation triangle convolved with
 			// the lowpass: with R'' = lowpass, it is R(x+1) - 2R(x) + R(x-1),
 			// and R(x) = Q(c x) / c plus terms that cancel in the difference
@@ -443,7 +443,7 @@ static void _renderVoice(struct MP2KHiFi* hifi, struct MP2KHiFiVoice* v, const s
 			hifi->half[1][i & hifi->ringMask] += acc * g1;
 			continue;
 		}
-		if (hifi->mode == MP2K_HIFI_LERP && !v->linear) {
+		if (hifi->mode == HIFI_MIX_LERP && !v->linear) {
 			double fk = floor(u);
 			int64_t k = (int64_t) fk;
 			double s0 = _sourceSample(hifi, v, k);
@@ -495,7 +495,7 @@ static void _renderVoice(struct MP2KHiFi* hifi, struct MP2KHiFiVoice* v, const s
 
 // The mono history at a fractional index, by windowed-sinc interpolation at
 // the output Nyquist (the history is already bandlimited below it)
-static double _monoAt(const struct MP2KHiFi* hifi, double x) {
+static double _monoAt(const struct HiFi* hifi, double x) {
 	int64_t k0 = (int64_t) ceil(x - VOICE_ZERO_CROSSINGS);
 	int64_t k1 = (int64_t) floor(x + VOICE_ZERO_CROSSINGS);
 	double acc = 0;
@@ -508,7 +508,7 @@ static double _monoAt(const struct MP2KHiFi* hifi, double x) {
 
 // Finalizes the half buffers up to (not including) index `end`: adds the
 // driver's reverb, routes the halves to the FIFOs' outputs and hands them on
-static void _flush(struct MP2KHiFi* hifi, int64_t end) {
+static void _flush(struct HiFi* hifi, int64_t end) {
 	int64_t i;
 	for (i = hifi->flushed; i < end; ++i) {
 		size_t idx = i & hifi->ringMask;
@@ -533,7 +533,7 @@ static void _flush(struct MP2KHiFi* hifi, int64_t end) {
 	hifi->flushed = end;
 }
 
-static void _recordStats(struct MP2KHiFi* hifi, uint32_t wav, bool started, double rate, double seconds, double gain) {
+static void _recordStats(struct HiFi* hifi, uint32_t wav, bool started, double rate, double seconds, double gain) {
 	size_t i;
 	for (i = 0; i < hifi->statsCount; ++i) {
 		if (hifi->stats[i].wav == wav) {
@@ -541,14 +541,14 @@ static void _recordStats(struct MP2KHiFi* hifi, uint32_t wav, bool started, doub
 		}
 	}
 	if (i == hifi->statsCount) {
-		if (i == MP2K_HIFI_MAX_SAMPLE_STATS) {
+		if (i == HIFI_MAX_SAMPLE_STATS) {
 			return;
 		}
 		memset(&hifi->stats[i], 0, sizeof(hifi->stats[i]));
 		hifi->stats[i].wav = wav;
 		++hifi->statsCount;
 	}
-	struct MP2KSampleStats* st = &hifi->stats[i];
+	struct HiFiSampleStats* st = &hifi->stats[i];
 	st->notes += started;
 	st->seconds += seconds;
 	st->rateSeconds += rate * seconds;
@@ -560,7 +560,7 @@ static void _recordStats(struct MP2KHiFi* hifi, uint32_t wav, bool started, doub
 	}
 }
 
-static void _renderFrameLinear(struct MP2KHiFi* hifi, uint64_t n, const void* frame, const struct HiFiFrameInfo* info,
+static void _renderFrameLinear(struct HiFi* hifi, uint64_t n, const void* frame, const struct HiFiFrameInfo* info,
                                const double route[2][2]) {
 	int32_t spv = info->samplesPerVBlank;
 	double half0[HIFI_MAX_SAMPLES_PER_FRAME];
@@ -589,7 +589,7 @@ static void _renderFrameLinear(struct MP2KHiFi* hifi, uint64_t n, const void* fr
 	hifi->horizon = start + spv * latch - latch * 0.5;
 }
 
-static void _renderFrame(struct MP2KHiFi* hifi, uint64_t n, const void* frame, const double fifoGain[2][2]) {
+static void _renderFrame(struct HiFi* hifi, uint64_t n, const void* frame, const double fifoGain[2][2]) {
 	struct HiFiFrameInfo info;
 	hifi->driver->info(frame, &info);
 	int32_t spv = info.samplesPerVBlank;
@@ -612,7 +612,7 @@ static void _renderFrame(struct MP2KHiFi* hifi, uint64_t n, const void* frame, c
 			route[h][1] += fifoGain[f][1];
 		}
 	}
-	if (hifi->mode == MP2K_HIFI_LINEAR) {
+	if (hifi->mode == HIFI_MIX_LINEAR) {
 		_renderFrameLinear(hifi, n, frame, &info, route);
 		return;
 	}
@@ -635,7 +635,7 @@ static void _renderFrame(struct MP2KHiFi* hifi, uint64_t n, const void* frame, c
 	hifi->driver->voices(frame, hifi->mem, in);
 	int c;
 	for (c = 0; c < HIFI_MAX_VOICES; ++c) {
-		struct MP2KHiFiVoice* v = &hifi->voices[c];
+		struct HiFiVoice* v = &hifi->voices[c];
 		const struct HiFiVoiceIn* ch = &in[c];
 		if (!ch->on) {
 			if (v->active) {
@@ -686,8 +686,8 @@ static void _renderFrame(struct MP2KHiFi* hifi, uint64_t n, const void* frame, c
 	}
 
 	int g;
-	for (g = 0; g < MP2K_HIFI_MAX_GHOSTS; ++g) {
-		struct MP2KHiFiVoice* v = &hifi->ghosts[g];
+	for (g = 0; g < HIFI_MAX_GHOSTS; ++g) {
+		struct HiFiVoice* v = &hifi->ghosts[g];
 		if (!v->active) {
 			continue;
 		}
@@ -732,7 +732,7 @@ static void _pickWindow(struct MP2KLockWindow* w, const int8_t* half, int32_t sp
 
 // Index of the pattern in the FIFO history if it occurs exactly once; -1 if
 // it doesn't occur, -2 if it's ambiguous
-static int64_t _findUnique(const struct MP2KHiFi* hifi, int fifo, const int8_t* pattern) {
+static int64_t _findUnique(const struct HiFi* hifi, int fifo, const int8_t* pattern) {
 	const int8_t* h = hifi->fifoHistory[fifo];
 	size_t n = hifi->fifoCount[fifo];
 	int64_t found = -1;
@@ -748,7 +748,7 @@ static int64_t _findUnique(const struct MP2KHiFi* hifi, int fifo, const int8_t* 
 	return found;
 }
 
-static void _tryLock(struct MP2KHiFi* hifi) {
+static void _tryLock(struct HiFi* hifi) {
 	int32_t spv = hifi->samplesPerVBlank;
 	size_t p;
 	for (p = 0; p < hifi->pendingCount; ++p) {
@@ -807,7 +807,7 @@ static void _tryLock(struct MP2KHiFi* hifi) {
 	}
 }
 
-void MP2KHiFiFifo(struct MP2KHiFi* hifi, int fifo, uint64_t when, int8_t sample) {
+void HiFiFifo(struct HiFi* hifi, int fifo, uint64_t when, int8_t sample) {
 	if (hifi->locked || hifi->failed) {
 		return;
 	}
@@ -822,7 +822,7 @@ void MP2KHiFiFifo(struct MP2KHiFi* hifi, int fifo, uint64_t when, int8_t sample)
 	++hifi->fifoCount[fifo];
 }
 
-void MP2KHiFiFrame(struct MP2KHiFi* hifi, uint64_t hookTime, const void* frame, const double fifoGain[2][2]) {
+void HiFiFrame(struct HiFi* hifi, uint64_t hookTime, const void* frame, const double fifoGain[2][2]) {
 	struct HiFiFrameInfo info;
 	hifi->driver->info(frame, &info);
 	if (hifi->failed || info.samplesPerVBlank <= 0 || info.samplesPerVBlank > HIFI_MAX_SAMPLES_PER_FRAME) {
@@ -854,12 +854,12 @@ void MP2KHiFiFrame(struct MP2KHiFi* hifi, uint64_t hookTime, const void* frame, 
 			return;
 		}
 	}
-	if (hifi->pendingCount == MP2K_HIFI_MAX_PENDING) {
+	if (hifi->pendingCount == HIFI_MAX_PENDING) {
 		hifi->failed = true;
 		hifi->horizon = INFINITY;
 		return;
 	}
-	struct MP2KHiFiPending* pend = &hifi->pending[hifi->pendingCount];
+	struct HiFiPending* pend = &hifi->pending[hifi->pendingCount];
 	pend->hookTime = hookTime;
 	memcpy(&hifi->pendingFrames[hifi->pendingCount * hifi->driver->frameSize], frame, hifi->driver->frameSize);
 	memcpy(pend->fifoGain, fifoGain, sizeof(pend->fifoGain));
@@ -887,7 +887,7 @@ void MP2KHiFiFrame(struct MP2KHiFi* hifi, uint64_t hookTime, const void* frame, 
 	}
 }
 
-double MP2KHiFiHorizon(const struct MP2KHiFi* hifi) {
+double HiFiHorizon(const struct HiFi* hifi) {
 	return hifi->horizon;
 }
 
@@ -973,7 +973,7 @@ static void _mp2kMixFloat(const void* frameIn, struct MP2KMemory* mem, uint32_t 
 	MP2KMixFloat(&frame, mem, half0, half1);
 }
 
-const struct HiFiDriver MP2KHiFiDriver = {
+const struct HiFiDriver MP2KBackend = {
 	.name = "MP2K",
 	.frameSize = sizeof(struct MP2KFrame),
 	.info = _mp2kInfo,

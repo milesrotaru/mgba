@@ -16,7 +16,7 @@
 #include "alphadream.h"
 #include "blmix.h"
 #include "mp2k.h"
-#include "mp2k_hifi.h"
+#include "hifi.h"
 #include "psf.h"
 
 #include <errno.h>
@@ -58,7 +58,7 @@ struct Options {
 	unsigned psgGrid;
 	bool mp2kVerify;
 	bool hifi;
-	enum MP2KHiFiMode hifiMode;
+	enum HiFiMode hifiMode;
 	double rampMs;
 	bool mutePsg;
 	bool muteFifo;
@@ -98,7 +98,7 @@ struct Capture {
 	double fifoLongGap[2];
 	int fifoLongRun[2];
 
-	struct MP2KHiFi* hifi;
+	struct HiFi* hifi;
 };
 
 struct MemoryView {
@@ -120,7 +120,7 @@ struct MP2KHook {
 	struct GBACodeHook d;
 	struct MemoryView mem;
 	bool verify;
-	struct MP2KHiFi* hifi;
+	struct HiFi* hifi;
 	struct GBAAudio* audio;
 	bool bandwidthDriver;
 	bool pending;
@@ -165,7 +165,7 @@ struct ADHook {
 	struct MemoryView mem;
 	struct ADDriver driver;
 	bool verify;
-	struct MP2KHiFi* hifi;
+	struct HiFi* hifi;
 	struct GBAAudio* audio;
 	bool bandwidthDriver;
 	bool pending;
@@ -226,7 +226,7 @@ static void _adHit(struct GBACodeHook* hook, struct GBA* gba) {
 		double gains[2][2];
 		_fifoGains(v->audio, 0, &gains[0][0], &gains[0][1]);
 		_fifoGains(v->audio, 1, &gains[1][0], &gains[1][1]);
-		MP2KHiFiFrame(v->hifi, mTimingGlobalTime(&gba->timing), &v->frame, gains);
+		HiFiFrame(v->hifi, mTimingGlobalTime(&gba->timing), &v->frame, gains);
 	}
 	if (v->verify) {
 		struct ADFrame copy = v->frame;
@@ -256,7 +256,7 @@ static void _mp2kHit(struct GBACodeHook* hook, struct GBA* gba) {
 		double gains[2][2];
 		_fifoGains(v->audio, 0, &gains[0][0], &gains[0][1]);
 		_fifoGains(v->audio, 1, &gains[1][0], &gains[1][1]);
-		MP2KHiFiFrame(v->hifi, mTimingGlobalTime(&gba->timing), &v->frame, gains);
+		HiFiFrame(v->hifi, mTimingGlobalTime(&gba->timing), &v->frame, gains);
 	}
 	if (v->verify) {
 		struct MP2KFrame copy = v->frame;
@@ -336,7 +336,7 @@ static void _captureFifo(struct GBAAudioObserver* observer, struct GBAAudio* aud
 	bool replaced = false;
 	if (cap->hifi && !cap->hifi->failed) {
 		// The MP2K voices are rendered from the driver's state instead
-		MP2KHiFiFifo(cap->hifi, fifo, when, sample);
+		HiFiFifo(cap->hifi, fifo, when, sample);
 		replaced = true;
 		sample = 0;
 	} else if (cap->muteFifo) {
@@ -727,13 +727,13 @@ static bool _parseArgs(int argc, char** argv, struct Options* opts) {
 			break;
 		case OPT_MP2K_MIX:
 			if (strcmp(optarg, "sinc") == 0) {
-				opts->hifiMode = MP2K_HIFI_SINC;
+				opts->hifiMode = HIFI_MIX_SINC;
 			} else if (strcmp(optarg, "linear") == 0) {
-				opts->hifiMode = MP2K_HIFI_LINEAR;
+				opts->hifiMode = HIFI_MIX_LINEAR;
 			} else if (strcmp(optarg, "lerp") == 0) {
-				opts->hifiMode = MP2K_HIFI_LERP;
+				opts->hifiMode = HIFI_MIX_LERP;
 			} else if (strcmp(optarg, "blam") == 0) {
-				opts->hifiMode = MP2K_HIFI_BLAM;
+				opts->hifiMode = HIFI_MIX_BLAM;
 			} else {
 				fprintf(stderr, "Unknown MP2K mix mode: %s\n", optarg);
 				return false;
@@ -923,8 +923,8 @@ int main(int argc, char** argv) {
 		.verify = opts.mp2kVerify,
 		.audio = &gba->audio,
 	};
-	struct MP2KHiFi hifi;
-	struct MP2KHiFi* activeHifi = NULL;
+	struct HiFi hifi;
+	struct HiFi* activeHifi = NULL;
 	uint32_t hookAddress = multiboot ? 0 : MP2KFindHook(image.data, image.size);
 	struct ADHook ad = {
 		.mem = { .d = { .read8 = _view8, .read32 = _view32 }, .cpu = gba->cpu },
@@ -936,14 +936,14 @@ int main(int argc, char** argv) {
 		fprintf(stderr, "No MP2K or AlphaDream driver found\n");
 		return 1;
 	}
-	const struct HiFiDriver* hifiDriver = hookAddress ? &MP2KHiFiDriver : haveAD ? &ADHiFiDriver : NULL;
+	const struct HiFiDriver* hifiDriver = hookAddress ? &MP2KBackend : haveAD ? &ADBackend : NULL;
 	uint8_t* sampleRom = NULL;
 	size_t sampleRomSize = 0;
 	if (opts.hifi && hifiDriver && opts.sampleRom && !_loadSampleRom(opts.sampleRom, &image, &sampleRom, &sampleRomSize)) {
 		return 1;
 	}
 	if (opts.hifi && hifiDriver) {
-		MP2KHiFiInit(&hifi, hifiDriver, &mixer, &mp2k.mem.d, sampleRom ? sampleRom : image.data,
+		HiFiInit(&hifi, hifiDriver, &mixer, &mp2k.mem.d, sampleRom ? sampleRom : image.data,
 		             sampleRom ? sampleRomSize : image.size, GBA_ARM7TDMI_FREQUENCY, opts.rampMs / 1000.0);
 		hifi.mode = opts.hifiMode;
 		hifi.mutedChannels = opts.muteChannels;
@@ -955,7 +955,7 @@ int main(int argc, char** argv) {
 		hifi.fillHoles = !opts.noFillHoles && !sampleRom;
 		if (opts.sampleStats) {
 			hifi.collectStats = true;
-			hifi.stats = calloc(MP2K_HIFI_MAX_SAMPLE_STATS, sizeof(*hifi.stats));
+			hifi.stats = calloc(HIFI_MAX_SAMPLE_STATS, sizeof(*hifi.stats));
 		}
 		if (opts.sourceCutoff > 0) {
 			hifi.sourceCutoff = opts.sourceCutoff;
@@ -1018,8 +1018,8 @@ int main(int argc, char** argv) {
 		_captureSync(&capture.d, &gba->audio, mTimingCurrentTime(&gba->timing));
 		size_t n;
 		double limit = (double) mTimingGlobalTime(&gba->timing);
-		if (activeHifi && MP2KHiFiHorizon(activeHifi) < limit) {
-			limit = MP2KHiFiHorizon(activeHifi);
+		if (activeHifi && HiFiHorizon(activeHifi) < limit) {
+			limit = HiFiHorizon(activeHifi);
 		}
 		while ((n = BLMixerRead(&mixer, limit, buf, bufFrames)) > 0) {
 			if (n > total - produced) {
@@ -1103,11 +1103,11 @@ int main(int argc, char** argv) {
 		}
 		size_t i;
 		for (i = 0; i < hifi.statsCount; ++i) {
-			const struct MP2KSampleStats* st = &hifi.stats[i];
+			const struct HiFiSampleStats* st = &hifi.stats[i];
 			printf("sample %08X notes %u seconds %.3f meanrate %.1f maxrate %.1f maxgain %.4f\n", st->wav, st->notes, st->seconds,
 			       st->seconds > 0 ? st->rateSeconds / st->seconds : 0, st->maxRate, st->maxGain);
 		}
-		MP2KHiFiDeinit(&hifi);
+		HiFiDeinit(&hifi);
 	}
 
 	free(buf);

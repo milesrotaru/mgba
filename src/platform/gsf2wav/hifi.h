@@ -3,19 +3,19 @@
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
-#ifndef GSF2WAV_MP2K_HIFI_H
-#define GSF2WAV_MP2K_HIFI_H
+#ifndef GSF2WAV_HIFI_H
+#define GSF2WAV_HIFI_H
 
 #include "blmix.h"
 #include "mp2k.h"
 
-// High-precision re-render of a sound driver's PCM voices. It was written for
-// MP2K (hence the names) and takes other drivers through struct HiFiDriver
-// below; alphadream.c is the second one.
+// High-precision re-render of a sound driver's PCM voices. The renderer knows
+// nothing about any particular driver: a backend (struct HiFiDriver below)
+// turns the driver's state into voices, and mp2k.c and alphadream.c each
+// provide one.
 //
-// For MP2K: the driver's voices, and its reverb
-// (a mono feedback echo of the segments mixed one DMA period and one period
-// less a frame ago).
+// MP2K's backend also gets the driver's reverb (a mono feedback echo of the
+// segments mixed one DMA period and one period less a frame ago).
 //
 // The driver's own state (read from the game every frame, after the
 // sequencer) decides which notes play, where each voice is in its sample, its
@@ -30,8 +30,8 @@
 // in the FIFO stream every later frame lands exactly where the hardware played
 // it.
 
-#define MP2K_HIFI_MAX_GHOSTS 24
-#define MP2K_HIFI_MAX_PENDING 4096
+#define HIFI_MAX_GHOSTS 24
+#define HIFI_MAX_PENDING 4096
 #define HIFI_MAX_VOICES MP2K_MAX_CHANNELS
 #define HIFI_MAX_SAMPLES_PER_FRAME MP2K_MAX_SAMPLES_PER_VBLANK
 
@@ -74,9 +74,9 @@ struct HiFiDriver {
 	                 double* half1);
 };
 
-extern const struct HiFiDriver MP2KHiFiDriver;
+extern const struct HiFiDriver MP2KBackend;
 
-struct MP2KHiFiVoice {
+struct HiFiVoice {
 	bool active;
 	uint32_t wav;
 	uint32_t dataAddress;
@@ -107,15 +107,15 @@ struct MP2KHiFiVoice {
 	double stopTime;
 };
 
-struct MP2KHiFiPending {
+struct HiFiPending {
 	uint64_t hookTime;
 	double fifoGain[2][2];
 };
 
 // Per-sample usage statistics (--sample-stats)
-#define MP2K_HIFI_MAX_SAMPLE_STATS 2048
+#define HIFI_MAX_SAMPLE_STATS 2048
 
-struct MP2KSampleStats {
+struct HiFiSampleStats {
 	uint32_t wav;
 	uint32_t notes;
 	double seconds;
@@ -124,26 +124,26 @@ struct MP2KSampleStats {
 	double maxGain;
 };
 
-enum MP2KHiFiMode {
+enum HiFiMode {
 	// Each voice sinc-resampled from its source straight to the output rate
-	MP2K_HIFI_SINC,
+	HIFI_MIX_SINC,
 	// The driver's own resampling (linear, at its mixing rate), without its
 	// 8-bit truncation, then sinc-reconstructed like the FIFO stream
-	MP2K_HIFI_LINEAR,
+	HIFI_MIX_LINEAR,
 	// Each voice linearly interpolated from its source straight at the output
 	// rate, like the linear option in many sequenced-audio players: no
 	// bandlimiting, so pitched-up samples alias and images leak above the
 	// source band, but nothing is lost to the driver's mixing rate
-	MP2K_HIFI_LERP,
+	HIFI_MIX_LERP,
 	// Linear interpolation, then lowpassed at the output rate: the triangle
 	// kernel convolved with the output's sinc. Keeps linear's images above
 	// each source's band at low rates, and stops aliasing at high ones
-	MP2K_HIFI_BLAM,
+	HIFI_MIX_BLAM,
 };
 
-struct MP2KHiFi {
+struct HiFi {
 	const struct HiFiDriver* driver;
-	enum MP2KHiFiMode mode;
+	enum HiFiMode mode;
 	uint32_t mutedChannels;
 	// If nonzero, only voices playing this sample (its header address) sound
 	uint32_t soloWav;
@@ -157,7 +157,7 @@ struct MP2KHiFi {
 	// samples, full-scale spikes. With this set, zero bytes in a sample are
 	// treated as missing and filled by interpolating their neighbours.
 	bool fillHoles;
-	struct MP2KHiFiRepaired {
+	struct HiFiRepaired {
 		uint32_t address;
 		int64_t size;
 		double* data;
@@ -185,8 +185,8 @@ struct MP2KHiFi {
 	double* blamQ;
 	double* blamS;
 
-	struct MP2KHiFiVoice voices[HIFI_MAX_VOICES];
-	struct MP2KHiFiVoice ghosts[MP2K_HIFI_MAX_GHOSTS];
+	struct HiFiVoice voices[HIFI_MAX_VOICES];
+	struct HiFiVoice ghosts[HIFI_MAX_GHOSTS];
 
 	// Lock onto the FIFO clock
 	bool locked;
@@ -202,7 +202,7 @@ struct MP2KHiFi {
 	size_t fifoCount[2];
 	size_t fifoCapacity;
 
-	struct MP2KHiFiPending* pending;
+	struct HiFiPending* pending;
 	uint8_t* pendingFrames; // the driver's frames, driver->frameSize each
 	size_t pendingCount;
 	// Per pending frame and half: the most distinctive window of the exact mix
@@ -232,22 +232,22 @@ struct MP2KHiFi {
 	uint64_t droppedGhosts;
 
 	bool collectStats;
-	struct MP2KSampleStats* stats;
+	struct HiFiSampleStats* stats;
 	size_t statsCount;
 };
 
-void MP2KHiFiInit(struct MP2KHiFi* hifi, const struct HiFiDriver* driver, struct BLMixer* out, struct MP2KMemory* mem,
+void HiFiInit(struct HiFi* hifi, const struct HiFiDriver* driver, struct BLMixer* out, struct MP2KMemory* mem,
                   const uint8_t* rom, size_t romSize, double clockRate, double rampSeconds);
-void MP2KHiFiDeinit(struct MP2KHiFi* hifi);
+void HiFiDeinit(struct HiFi* hifi);
 
 // Called at the hook, with the FIFO routing gains in effect (per FIFO, left
 // and right, in output units per int8 LSB).
 // frame is the driver's own frame type.
-void MP2KHiFiFrame(struct MP2KHiFi* hifi, uint64_t hookTime, const void* frame, const double fifoGain[2][2]);
+void HiFiFrame(struct HiFi* hifi, uint64_t hookTime, const void* frame, const double fifoGain[2][2]);
 
-void MP2KHiFiFifo(struct MP2KHiFi* hifi, int fifo, uint64_t when, int8_t sample);
+void HiFiFifo(struct HiFi* hifi, int fifo, uint64_t when, int8_t sample);
 
 // Output is complete up to this cycle.
-double MP2KHiFiHorizon(const struct MP2KHiFi* hifi);
+double HiFiHorizon(const struct HiFi* hifi);
 
 #endif
