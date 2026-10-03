@@ -19,7 +19,7 @@ def main():
     files = sorted(glob.glob(os.path.join(a.dir, '*.minigsf')))[::a.every]
     def run(f):
         out = os.path.join(a.out, os.path.basename(f)[:-8] + '.wav') if a.out else '/dev/null'
-        r = subprocess.run([a.exe] + extra + [f, out], capture_output=True, text=True)
+        r = subprocess.run([a.exe, '-v'] + extra + [f, out], capture_output=True, text=True)
         lines = [l for l in r.stderr.splitlines() if a.grep in l]
         return os.path.basename(f), r.returncode, lines
     with concurrent.futures.ThreadPoolExecutor(os.cpu_count()) as ex:

@@ -43,7 +43,7 @@ def main():
         wav = os.path.join(a.out_dir, base + '.wav')
         out = os.path.join(a.out_dir, base + '.opus')
         track_opts = overrides.get(base, overrides.get(base.split(' ', 1)[0], []))
-        r = subprocess.run([a.exe] + extra + track_opts + [f, wav], capture_output=True, text=True)
+        r = subprocess.run([a.exe, '-v'] + extra + track_opts + [f, wav], capture_output=True, text=True)
         if r.returncode:
             return base, False, r.stderr.strip().splitlines()[-1:]
         t = tags_of(f)
@@ -52,14 +52,14 @@ def main():
         for key, val in (('title', t.get('title')), ('artist', t.get('artist')), ('album', t.get('game')),
                          ('date', t.get('year')), ('tracknumber', m.group(1).lstrip('0') if m else None),
                          ('copyright', t.get('copyright')),
-                         ('comment', 'Rendered with gsf2wav (mGBA), MP2K high-precision mixing' +
+                         ('comment', 'Rendered with gsf2wav (mGBA)' +
                           (f'; options: {" ".join(extra)}' if extra else '') +
                           (f'; track options: {" ".join(track_opts)}' if track_opts else ''))):
             if val:
                 cmd += ['--comment', f'{key.upper()}={val}']
         r2 = subprocess.run(cmd + [wav, out], capture_output=True, text=True)
         os.remove(wav)
-        peak = [l for l in r.stderr.splitlines() if l.startswith('Peak') or 'high-precision' in l]
+        peak = [l.strip() for l in r.stderr.splitlines() if l.startswith('Wrote') or 'high-precision: locked' in l]
         if track_opts:
             peak.append('options: ' + ' '.join(track_opts))
         return base, r2.returncode == 0, peak

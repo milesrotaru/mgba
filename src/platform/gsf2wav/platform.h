@@ -48,6 +48,8 @@ bool PlatEndsWithSeparator(const char* path);
 int PlatCaseCompare(const char* a, const char* b);
 
 int PlatCpuCount(void);
+// Seconds from some fixed moment; only differences mean anything.
+double PlatNowSeconds(void);
 bool PlatStderrIsTty(void);
 
 // Windows console niceties; no-ops elsewhere.

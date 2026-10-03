@@ -23,6 +23,7 @@
 #include <dirent.h>
 #include <errno.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <unistd.h>
 #define SEP_CHARS "/"
 #endif
@@ -346,6 +347,13 @@ int PlatCpuCount(void) {
 	return info.dwNumberOfProcessors > 0 ? (int) info.dwNumberOfProcessors : 1;
 }
 
+double PlatNowSeconds(void) {
+	LARGE_INTEGER freq, now;
+	QueryPerformanceFrequency(&freq);
+	QueryPerformanceCounter(&now);
+	return (double) now.QuadPart / (double) freq.QuadPart;
+}
+
 bool PlatStderrIsTty(void) {
 	return _isatty(_fileno(stderr));
 }
@@ -441,6 +449,12 @@ bool PlatListDir(const char* dir, bool (*cb)(const char* name, void* user), void
 int PlatCpuCount(void) {
 	long n = sysconf(_SC_NPROCESSORS_ONLN);
 	return n > 0 ? (int) n : 1;
+}
+
+double PlatNowSeconds(void) {
+	struct timespec ts;
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	return ts.tv_sec + ts.tv_nsec * 1e-9;
 }
 
 bool PlatStderrIsTty(void) {

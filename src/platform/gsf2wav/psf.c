@@ -249,7 +249,7 @@ static bool _uploadSection(struct GSFImage* image, const uint8_t* data, size_t s
 	// missing tail zeroed.
 	size_t available = romSize;
 	if (romSize > size - 12) {
-		MsgWrite(MSG_WARN, "%s: program section claims %u bytes but only has %zu; loading what is there", path, romSize, size - 12);
+		MsgWrite(MSG_DETAIL, "%s: program section claims %u bytes but only has %zu; loading what is there", path, romSize, size - 12);
 		available = size - 12;
 	}
 	if (!image->haveEntry) {
