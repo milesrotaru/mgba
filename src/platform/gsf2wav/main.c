@@ -15,8 +15,9 @@
 
 #include "alphadream.h"
 #include "blmix.h"
-#include "mp2k.h"
 #include "hifi.h"
+#include "mp2k.h"
+#include "platform.h"
 #include "psf.h"
 
 #include <errno.h>
@@ -524,7 +525,7 @@ static bool _wavWrite(struct WavWriter* w, const double* samples, size_t frames)
 // rip kept must match it, apart from a few bytes a ripper patches (its
 // driver hooks); anything else means a different game or revision.
 static bool _loadSampleRom(const char* path, const struct GSFImage* image, uint8_t** data, size_t* size) {
-	FILE* f = fopen(path, "rb");
+	FILE* f = PlatFOpen(path, "rb");
 	if (!f) {
 		fprintf(stderr, "Could not open %s\n", path);
 		return false;
@@ -831,6 +832,8 @@ static bool _parseArgs(int argc, char** argv, struct Options* opts) {
 }
 
 int main(int argc, char** argv) {
+	PlatConsoleInit();
+	argv = PlatArgs(argc, argv, &argc);
 	struct Options opts;
 	if (!_parseArgs(argc, argv, &opts)) {
 		_usage(argv[0]);
@@ -991,7 +994,7 @@ int main(int argc, char** argv) {
 	gba->audio.observer = &capture.d;
 
 	struct WavWriter wav = {
-		.f = fopen(opts.output, "wb"),
+		.f = PlatFOpen(opts.output, "wb"),
 		.format = opts.format,
 		.rate = opts.rate,
 		.rng = 0x2545F491,
@@ -1009,7 +1012,7 @@ int main(int argc, char** argv) {
 	size_t bufFrames = 1 << 16;
 	double* buf = malloc(bufFrames * 2 * sizeof(double));
 	int lastPercent = -1;
-	bool showProgress = isatty(STDERR_FILENO);
+	bool showProgress = PlatStderrIsTty();
 	bool ok = true;
 
 	while (produced < total) {

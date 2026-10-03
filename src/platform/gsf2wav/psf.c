@@ -5,13 +5,14 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 #include "psf.h"
 
+#include "msglog.h"
+#include "platform.h"
+
 #include <ctype.h>
-#include <dirent.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <strings.h>
 #include <zlib.h>
 
 #define PSF_MAX_DEPTH 10
@@ -37,10 +38,20 @@ static char* _strndup(const char* s, size_t n) {
 	return out;
 }
 
+static bool _keyEquals(const char* a, const char* b, size_t len) {
+	size_t i;
+	for (i = 0; i < len; ++i) {
+		if (tolower((unsigned char) a[i]) != tolower((unsigned char) b[i])) {
+			return false;
+		}
+	}
+	return true;
+}
+
 static void _tagSet(struct PSFTags* tags, const char* key, size_t keyLen, const char* value, size_t valueLen) {
 	size_t i;
 	for (i = 0; i < tags->count; ++i) {
-		if (strlen(tags->tags[i].key) == keyLen && strncasecmp(tags->tags[i].key, key, keyLen) == 0) {
+		if (strlen(tags->tags[i].key) == keyLen && _keyEquals(tags->tags[i].key, key, keyLen)) {
 			// Repeated keys are joined with newlines, per the PSF spec
 			size_t oldLen = strlen(tags->tags[i].value);
 			tags->tags[i].value = realloc(tags->tags[i].value, oldLen + valueLen + 2);
@@ -111,7 +122,7 @@ void PSFTagsDeinit(struct PSFTags* tags) {
 const char* PSFTagGet(const struct PSFTags* tags, const char* key) {
 	size_t i;
 	for (i = 0; i < tags->count; ++i) {
-		if (strcasecmp(tags->tags[i].key, key) == 0) {
+		if (PlatCaseCompare(tags->tags[i].key, key) == 0) {
 			return tags->tags[i].value;
 		}
 	}
@@ -165,12 +176,21 @@ double PSFParseTime(const char* str) {
 	return total + part + frac;
 }
 
-static char* _dirname(const char* path) {
-	const char* slash = strrchr(path, '/');
-	if (!slash) {
-		return strdup(".");
+struct LibSearch {
+	const char* dir;
+	const char* wanted;
+	char* found;
+};
+
+static bool _matchName(const char* name, void* user) {
+	struct LibSearch* search = user;
+	if (PlatCaseCompare(name, search->wanted) == 0) {
+		size_t len = strlen(search->dir) + strlen(name) + 2;
+		search->found = malloc(len);
+		PlatJoin(search->found, len, search->dir, name);
+		return false;
 	}
-	return _strndup(path, slash - path);
+	return true;
 }
 
 // Rips are usually made on case-insensitive filesystems, so a _lib tag may not
@@ -178,32 +198,24 @@ static char* _dirname(const char* path) {
 static FILE* _openLib(const char* dir, const char* name, char** resolved) {
 	size_t len = strlen(dir) + strlen(name) + 2;
 	char* path = malloc(len);
-	snprintf(path, len, "%s/%s", dir, name);
-	FILE* f = fopen(path, "rb");
+	PlatJoin(path, len, dir, name);
+	FILE* f = PlatFOpen(path, "rb");
 	if (f) {
 		*resolved = path;
 		return f;
 	}
 	free(path);
-	DIR* d = opendir(dir);
-	if (!d) {
+	struct LibSearch search = { dir, name, NULL };
+	PlatListDir(dir, _matchName, &search);
+	if (!search.found) {
 		return NULL;
 	}
-	struct dirent* ent;
-	while ((ent = readdir(d))) {
-		if (strcasecmp(ent->d_name, name) == 0) {
-			len = strlen(dir) + strlen(ent->d_name) + 2;
-			path = malloc(len);
-			snprintf(path, len, "%s/%s", dir, ent->d_name);
-			f = fopen(path, "rb");
-			if (f) {
-				*resolved = path;
-				break;
-			}
-			free(path);
-		}
+	f = PlatFOpen(search.found, "rb");
+	if (f) {
+		*resolved = search.found;
+	} else {
+		free(search.found);
 	}
-	closedir(d);
 	return f;
 }
 
@@ -237,7 +249,7 @@ static bool _uploadSection(struct GSFImage* image, const uint8_t* data, size_t s
 	// missing tail zeroed.
 	size_t available = romSize;
 	if (romSize > size - 12) {
-		fprintf(stderr, "%s: program section claims %u bytes but only has %zu; loading what is there\n", path, romSize, size - 12);
+		MsgWrite(MSG_WARN, "%s: program section claims %u bytes but only has %zu; loading what is there", path, romSize, size - 12);
 		available = size - 12;
 	}
 	if (!image->haveEntry) {
@@ -279,7 +291,7 @@ static bool _load(const char* path, FILE* f, struct GSFImage* image, struct PSFT
 	}
 	bool ok = false;
 	struct PSFTags tags = {0};
-	char* dir = _dirname(path);
+	char* dir = PlatDirName(path);
 	uint8_t* program = NULL;
 
 	if (fileSize < 16 || memcmp(file, "PSF", 3) != 0) {
@@ -382,7 +394,7 @@ done:
 bool GSFLoad(const char* path, struct GSFImage* image, struct PSFTags* tags, char* err, size_t errLen) {
 	memset(image, 0, sizeof(*image));
 	memset(tags, 0, sizeof(*tags));
-	FILE* f = fopen(path, "rb");
+	FILE* f = PlatFOpen(path, "rb");
 	if (!f) {
 		_error(err, errLen, "%s: could not open file", path);
 		return false;

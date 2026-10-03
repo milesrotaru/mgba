@@ -5,6 +5,8 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 #include "hifi.h"
 
+#include "msglog.h"
+
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -831,7 +833,7 @@ void HiFiFrame(struct HiFi* hifi, uint64_t hookTime, const void* frame, const do
 	if (hifi->locked) {
 		if (info.samplesPerVBlank != hifi->samplesPerVBlank) {
 			// The driver was reconfigured; timing no longer holds
-			fprintf(stderr, "%s: mixing rate changed mid-song; high-precision mixing stopped\n", hifi->driver->name);
+			MsgWrite(MSG_WARN, "%s: mixing rate changed mid-song; high-precision mixing stopped", hifi->driver->name);
 			hifi->failed = true;
 			hifi->horizon = INFINITY;
 			return;
@@ -881,7 +883,7 @@ void HiFiFrame(struct HiFi* hifi, uint64_t hookTime, const void* frame, const do
 		}
 		hifi->pendingCount = 0;
 	} else if (hifi->pendingCount > LOCK_GIVE_UP) {
-		fprintf(stderr, "%s: couldn't find the driver's output in the FIFO stream; high-precision mixing disabled\n", hifi->driver->name);
+		MsgWrite(MSG_WARN, "%s: couldn't find the driver's output in the FIFO stream; high-precision mixing disabled", hifi->driver->name);
 		hifi->failed = true;
 		hifi->horizon = INFINITY;
 	}
