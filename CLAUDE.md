@@ -19,6 +19,10 @@ working knowledge that doesn't belong in a user-facing README.
 - **Don't download ROMs.** The maintainer owns the games and uploads their
   own dumps when a task needs them. Rips come from https://gsf.joshw.info/
   via `tools/fetch_set.py`.
+- **Don't crawl gsf.joshw.info.** Its robots.txt is `Disallow: /` for all
+  agents. Fetch only specific sets the maintainer asks for, one at a time; no
+  bulk downloads or index scraping without the site owner's permission.
+  Check robots.txt before automated fetches from any site.
 - **Work on `master`** and push to `origin master`. Don't open pull requests
   unless asked.
 - **Tone of the docs is deliberately humble.** The maintainer is a hobbyist,
@@ -176,6 +180,27 @@ complete Superstar Saga pack with `--sample-rom`.
   float), `lerp` (unbandlimited), `blam` (linear-interpolation triangle
   convolved exactly with a Kaiser-windowed sinc lowpass). The maintainer
   prefers `blam`.
+
+## Driver databases (which games use which driver)
+
+Checked 2026-10; nothing from them is committed (licenses unclear).
+
+- VGMPF "Game Boy Advance sound drivers" (wiki, by title): the best
+  hand-curated map. Lists MLSS correctly under AlphaDream, plus three more
+  AlphaDream-driver games (Hamtaro: Ham-Ham Games, Hamtaro: Rainbow Rescue,
+  Minna no Soft Series: Happy Trump 20), the first candidates for
+  `alphadream.c`.
+- loveemu's AGBinator CSV (gist, by serial) and the granbone
+  mgba-fixed-audio-tempo compatibility DB (by ROM hash): automated scanners.
+  Both call MLSS MP2K, because the ROM links MP2K's library (VGMPF says for
+  its Mario Bros. minigame; unconfirmed, since no rip track runs it). A
+  per-ROM "driver" isn't necessarily the music's driver.
+- caitsith2's ofslist.txt: MP2K song table offsets by serial, up to release
+  #1894 (no Mother 3). WL4's entry checked out against the ROM. Useful for
+  a future loop-count feature.
+- None records the `SoundMainRAM` mixer revision, which is what decides
+  whether `mp2k.c` matches a game. Only the game's code (a rip or ROM, then
+  `--verify`) answers that.
 
 ## Open items (none in progress)
 

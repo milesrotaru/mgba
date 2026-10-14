@@ -272,8 +272,12 @@ checks were for:
 Results on Mario & Luigi: Superstar Saga
 ----------------------------------------
 
-Driver: **AlphaDream's own**, not MP2K (there is no `'Smsh'` in the ROM). It
-was found with `gsftrace` (below): the sound DMAs read two 528-byte buffers
+Driver: **AlphaDream's own**, not MP2K. I first wrote here that the ROM has no
+MP2K in it. That was wrong: I'd only checked the rip. The full ROM does contain
+MP2K's library (VGMPF's driver list says the built-in Mario Bros. minigame uses
+it), but none of the rip's tracks run it, so the ripper zeroed it, and that's
+why automated scanners can list this game as MP2K. The music driver was found
+with `gsftrace` (below): the sound DMAs read two 528-byte buffers
 in IWRAM, one ARM routine in IWRAM writes them, and the Thumb routine that
 calls it once per frame sits right before a literal pool naming all of the
 IWRAM routines. `alphadream.h` documents the channel and sample formats as I
@@ -522,7 +526,16 @@ Things I know are wrong or unfinished, and things I don't know:
 
 The same rendering could in principle run during gameplay in RetroArch's mGBA
 core. I haven't started on this, and everything below is guesswork from
-reading the code, not experience with libretro:
+reading the code, not experience with libretro.
+
+Someone has since built something close to it:
+[mGBA Fixed Audio Tempo](https://github.com/granbone/mgba-fixed-audio-tempo),
+a RetroArch mGBA core that generates MP2K music on its own clock so it keeps
+its tempo during fast-forward, with runtime checks and a per-ROM compatibility
+database. I've only read its README and database, not its code. Anyone looking
+at live playback should look there first.
+
+My notes from before I knew about it:
 
 - `retro_run` in `src/platform/libretro/libretro.c` calls `core->runFrame()`,
   then drains the core's `mAudioBuffer` into `audioCallback`. A hi-fi path
