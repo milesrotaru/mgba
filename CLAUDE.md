@@ -199,8 +199,12 @@ Checked 2026-10; nothing from them is committed (licenses unclear).
   #1894 (no Mother 3). WL4's entry checked out against the ROM. Useful for
   a future loop-count feature.
 - None records the `SoundMainRAM` mixer revision, which is what decides
-  whether `mp2k.c` matches a game. Only the game's code (a rip or ROM, then
-  `--verify`) answers that.
+  whether `mp2k.c` matches a game. Only the game's code answers that:
+  `tools/mp2k_fingerprint.py` statically (core hash `5bfa0c4bba80` is the
+  verified revision; M3, WL4 and MLSS's minigame copy all have it), then
+  `--verify` for certainty. Not yet tested on a revision that fails
+  `--verify`; the README says pret's pokeemerald driver is a later
+  revision, so a Pokémon Emerald set would be the obvious negative control.
 
 ## Open items (none in progress)
 

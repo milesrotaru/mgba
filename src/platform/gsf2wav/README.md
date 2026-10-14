@@ -482,6 +482,10 @@ Things I know are wrong or unfinished, and things I don't know:
   compressed and reversed samples, which will render wrong. Run
   `--verify` on a new game first; it reports any frame where the port and
   the game disagree. I've only done that on three games.
+  `tools/mp2k_fingerprint.py` gives a quicker, static hint: it hashes the
+  mixer code the game copies to IWRAM. Mother 3, Wario Land 4 and Superstar
+  Saga's MP2K copy share one hash. A different hash only means "unknown", and
+  I haven't yet seen it tell apart a revision that actually fails `--verify`.
 - **I haven't compared any of this against real hardware,** and the listening
   I've done is mine alone and not blind. The sound-quality claims above should
   be read as "this is what I heard", not as findings.
@@ -600,6 +604,7 @@ judgement call.
 | `clicks.py` | Crude click detector (high-passed energy spikes) |
 | `find_loop.py` | Loop period from a long render (start detection unreliable) |
 | `mp2k_scan.py` | Find `SoundMain` / the `SoundMainRAM` entry in a GSF |
+| `mp2k_fingerprint.py` | Hash a game's MP2K mixer code (from a rip or ROM) to see whether it's the revision `mp2k.c` was verified against |
 | `disasm_mp2k.py` | Disassemble a game's driver (keep the output out of git) |
 | `sample_stats.py` | Per-sample usage across a set (via `--sample-stats`) |
 | `sample_noise.py` | Heuristic sample-noisiness ranking (didn't find the organ) |
