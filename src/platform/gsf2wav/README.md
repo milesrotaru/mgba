@@ -334,10 +334,11 @@ line problem.
 
     mkdir build && cd build
     cmake .. -DBUILD_GSF2WAV=ON -DBUILD_QT=OFF -DBUILD_SDL=OFF -DUSE_FFMPEG=OFF
-    make gsf2wav
+    make gsf2wav gsftrace
 
-This needs zlib. The binary is `build/gsf2wav/gsf2wav`. `gsftrace`, the
-reverse-engineering aid, is built alongside it.
+This needs zlib. The binaries are `build/gsf2wav/gsf2wav` and
+`build/gsf2wav/gsftrace` (the reverse-engineering aid; leave it off the `make`
+line if you don't need it).
 
 ### Building for Windows
 
@@ -345,8 +346,9 @@ reverse-engineering aid, is built alongside it.
 (the apt packages are listed at the top of the script) and zips it with a
 plain-text README, the license and the overrides files. The exe is statically
 linked, so it needs only DLLs every Windows installation has. I tested it by
-running the full test suite and the 37-case comparison against the Linux build
-under Wine (`GSF2WAV_RUNNER=wine64 python3 test/run.py gsf2wav.exe`); the audio
+running the full test suite under Wine
+(`GSF2WAV_RUNNER=wine64 python3 test/run.py gsf2wav.exe`) and the 37-case
+comparison against the Linux build (`tools/regress.py run --wine`); the audio
 came out byte-for-byte identical. **It hasn't been run on a real Windows
 machine.** Windows-specific code is in `platform.c`: UTF-8 file names (Japanese
 rip folders), both path separators, wildcard expansion (cmd.exe leaves that to
@@ -560,7 +562,13 @@ judgement call.
    `python3 src/platform/gsf2wav/tools/batch.py build/gsf2wav/gsf2wav rips/mother3 --every 3 --grep high-precision -- -l 45 -f 0`
    should report every track locked, with 0 resyncs, 0 samples lost and 0
    fade-outs dropped.
-4. For changes that affect sound: compare renders with the tools below, and
+4. If you have the three sets (and, for a few cases, your own ROM dumps) in
+   `rips/`: `python3 src/platform/gsf2wav/tools/regress.py run OLD_BUILD old/`,
+   then the same with `NEW_BUILD new/`, then `regress.py diff old new`.
+   It renders 37 fixed cases across both drivers and every mix mode and
+   compares them byte for byte. A refactor should change none; a sound change
+   should only touch the cases it's meant to. Missing files are skipped.
+5. For changes that affect sound: compare renders with the tools below, and
    A/B by ear. The measurements caught real bugs, but every time the last word
    on whether something sounded right was a listening test.
 
@@ -570,6 +578,7 @@ judgement call.
 |---|---|
 | `build-windows.sh`, `package_windows.py` | Cross-build `gsf2wav.exe` with MinGW-w64 and zip it with its docs |
 | `fetch_set.py` | Download a GSF set into `rips/` |
+| `regress.py` | Byte-for-byte comparison of two builds on real rips (37 cases) |
 | `batch.py` | Run gsf2wav over a set in parallel, filtering its stderr |
 | `render_set.py` | Render a set to tagged Opus and zip it |
 | `compare.py` | Lag, gain and residual between two renders in a common band |
